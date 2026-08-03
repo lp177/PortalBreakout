@@ -1,6 +1,8 @@
 // PortalBreakout — PeerJS multiplayer session: room codes, heartbeat, reconnect (see CONTRACT.md)
 // Uses the global `Peer` constructor from vendor/peerjs.min.js (loaded before main.js).
 
+import { ICE_ENDPOINT } from './constants.js';
+
 const CODE_PREFIX = 'pb-';
 const PEER_PREFIX = 'portalbreakout-';   // namespaced broker id; user-facing code stays 'pb-xxxxx'
 const CODE_LEN = 5;
@@ -39,9 +41,34 @@ const customIce = () => {
   } catch { return []; }
 };
 
+// Short-lived TURN credentials fetched from an operator-run endpoint (see
+// server/turn/). URL priority: localStorage 'pb.iceurl.v1' (testing) → the
+// ICE_ENDPOINT build constant. Failures never block a session — the game just
+// falls back to STUN + best-effort public relays.
+let remoteIce = { servers: [], until: 0 };
+const iceEndpointUrl = () => {
+  try { return localStorage.getItem('pb.iceurl.v1') || ICE_ENDPOINT; } catch { return ICE_ENDPOINT; }
+};
+const refreshRemoteIce = async () => {
+  const url = iceEndpointUrl();
+  if (!url) { remoteIce = { servers: [], until: 0 }; return; }
+  if (remoteIce.until > Date.now()) return;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const servers = Array.isArray(json?.iceServers) ? json.iceServers.filter((s) => s?.urls) : [];
+    // Refresh at 80% of the credential TTL so creds never expire mid-handshake.
+    const ttlS = Math.min(Number(json?.ttl) || 600, 6 * 3600);
+    remoteIce = { servers, until: Date.now() + ttlS * 800 };
+  } catch (err) {
+    console.warn('net: ICE endpoint unavailable, using public fallbacks', err);
+  }
+};
+
 const peerOptions = () => ({
   config: {
-    iceServers: [...customIce(), ...ICE_SERVERS],
+    iceServers: [...customIce(), ...remoteIce.servers, ...ICE_SERVERS],
     ...(FORCE_RELAY ? { iceTransportPolicy: 'relay' } : {}),
   },
 });
@@ -271,14 +298,15 @@ const handleIncomingConnection = (c) => {
   });
 };
 
-const host = (listener) => {
+const host = async (listener) => {
   teardown(false); // silently drop any previous session
   cb = listener;
   if (typeof Peer === 'undefined') {
-    return Promise.reject(new Error('Multiplayer requires the PeerJS library (are you offline?)'));
+    throw new Error('Multiplayer requires the PeerJS library (are you offline?)');
   }
   role = 'host';
   status = 'starting';
+  await refreshRemoteIce();
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (message) => {
@@ -336,19 +364,20 @@ const host = (listener) => {
   });
 };
 
-const join = (roomCode, listener) => {
+const join = async (roomCode, listener) => {
   teardown(false);
   cb = listener;
   if (typeof Peer === 'undefined') {
-    return Promise.reject(new Error('Multiplayer requires the PeerJS library (are you offline?)'));
+    throw new Error('Multiplayer requires the PeerJS library (are you offline?)');
   }
   const suffix = normalizeSuffix(roomCode);
   if (!suffix) {
-    return Promise.reject(new Error('Invalid room code — expected pb- plus 5 letters/numbers'));
+    throw new Error('Invalid room code — expected pb- plus 5 letters/numbers');
   }
   role = 'guest';
   status = 'starting';
   hostPeerId = PEER_PREFIX + suffix;
+  await refreshRemoteIce();
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (message) => {

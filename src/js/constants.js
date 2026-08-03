@@ -14,6 +14,11 @@ export const POWERUP_SPEED = 170, POWERUP_R = 16, POWERUP_DROP_CHANCE = 0.11;
 export const LIVES_START = 3, MAX_BALLS = 6;
 export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progress.v1';
 
+// URL of a TURN-credentials endpoint (see server/turn/ and README "Multiplayer
+// troubleshooting"). Empty = disabled; the game then relies on public STUN and
+// best-effort public relays only. Example: 'https://turn.example.com/ice'
+export const ICE_ENDPOINT = '';
+
 // Versus mode (see CONTRACT.md "Versus mode")
 export const VS_LIVES = 3, VS_LIFE_MAX = 5;
 export const VS_RAMP_RATE = 0.008, VS_RAMP_MAX = 1.9, VS_BALL_SPEED_MAX = 1150;

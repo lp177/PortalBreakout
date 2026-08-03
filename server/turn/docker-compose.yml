@@ -1,0 +1,63 @@
+# PortalBreakout TURN relay — coturn + short-lived-credentials endpoint.
+# Compose-spec file, podman-first: run ./start.sh (podman compose, docker fallback).
+# All secrets/tuning come from ./.env — see .env.example; start.sh generates
+# TURN_SECRET automatically if missing. Never commit .env.
+
+services:
+  coturn:
+    image: docker.io/coturn/coturn:4-alpine
+    restart: unless-stopped
+    # Host networking: TURN needs its listening port plus a UDP relay port range;
+    # per-port publishing is slow and error-prone, host mode is the standard choice.
+    # Rootless podman: all defaults are >1024, no extra privileges needed.
+    network_mode: host
+    command:
+      - --log-file=stdout
+      - --listening-port=${TURN_PORT:-3478}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      - --realm=${TURN_REALM:-portalbreakout}
+      # REST-credentials mode: clients present HMAC(secret, expiry) minted by the
+      # turn-credentials service; the secret itself never reaches a browser.
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --fingerprint
+      - --no-software-attribute
+      - --no-multicast-peers
+      # Relay is for internet peers only — refuse relaying into local networks.
+      # (For same-machine testing you must also add --allow-loopback-peers and
+      # drop these denies: coturn refuses loopback peers by default. Dev only.)
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      # Abuse limits: a game data channel needs a few KB/s; cap everything else.
+      - --user-quota=12
+      - --total-quota=200
+      - --max-bps=131072
+      - --stale-nonce=600
+      # If the machine is behind 1:1 NAT (public IP not on the interface),
+      # uncomment and set both addresses:
+      # - --external-ip=${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}
+
+  turn-credentials:
+    image: docker.io/library/node:24-alpine
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./creds-server.mjs:/app/creds-server.mjs:ro
+    command: ["node", "creds-server.mjs"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_HOST: ${TURN_HOST}
+      TURN_PORT: ${TURN_PORT:-3478}
+      CREDS_TTL_S: ${CREDS_TTL_S:-7200}
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://lp177.github.io}
+      PORT: ${CREDS_PORT:-8788}
+    ports:
+      # Default binds loopback only — put your TLS reverse proxy in front and
+      # forward https://<your-domain>/ice to it.
+      - "${CREDS_BIND:-127.0.0.1}:${CREDS_PORT:-8788}:${CREDS_PORT:-8788}"

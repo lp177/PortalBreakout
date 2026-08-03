@@ -175,7 +175,7 @@ export const net = {
 
 Heartbeat: both sides send `{t:'hb', ts}` every 1 s over the data channel; if nothing (any message counts) received for 3 s → emit `lost`; keep the Peer alive and if data resumes within 30 s → `reconnected`, else `closed`. Uses vendored PeerJS with default cloud broker; one reliable ordered DataChannel.
 
-ICE: net.js passes an explicit `config.iceServers` (public STUN + best-effort public TURN relays) instead of PeerJS defaults. Operators can prepend their own relay via `localStorage['pb.ice.v1']` (JSON array of RTCIceServer). `?relay=1` forces `iceTransportPolicy:'relay'` for TURN-path testing.
+ICE: net.js passes an explicit `config.iceServers` (public STUN + best-effort public TURN relays) instead of PeerJS defaults. Order of precedence: `localStorage['pb.ice.v1']` (JSON array of RTCIceServer, manual override) → short-lived credentials fetched from a TURN-credentials endpoint (`constants.ICE_ENDPOINT`, testable via `localStorage['pb.iceurl.v1']`; endpoint shape `{ttl, iceServers:[…]}`; fetch failures never block a session) → the public defaults. `?relay=1` forces `iceTransportPolicy:'relay'` for TURN-path testing. The self-hosted relay stack lives in `server/turn/` (coturn REST-auth + minting endpoint, podman-first, `.env`-configured with auto-generated secret).
 
 Wire protocol (host authoritative, guest = top paddle):
 

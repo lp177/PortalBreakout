@@ -57,7 +57,30 @@ Multiplayer uses [PeerJS](https://peerjs.com) (vendored) with its free public br
 "Could not connect / connection timed out" when joining almost always means WebRTC couldn't traverse one player's NAT (mobile networks, CGNAT, VPNs, strict firewalls). Direct and STUN-assisted connections work for most pairs, but the hard cases need a **TURN relay**, and the free public relays bundled as a fallback are best-effort at most.
 
 - **Self-test:** open the game with `?relay=1` on both sides and try to join — if it fails, no working TURN relay is reachable and hard-NAT pairs won't connect either.
-- **Reliable fix:** provide your own TURN server (a small [coturn](https://github.com/coturn/coturn) instance, or a free [metered.ca](https://www.metered.ca/stun-turn) account) and register it in the browser console — no rebuild needed:
+- **Reliable fix — self-hosted relay:** [`server/turn/`](server/turn/) ships a ready-to-run [coturn](https://github.com/coturn/coturn) + credentials-endpoint stack (podman-first, docker-compatible, plain `.env` configuration):
+
+  ```sh
+  cd server/turn
+  ./start.sh        # creates .env, generates the secret, starts the stack
+  ```
+
+  The TURN shared secret never reaches players' browsers: the game fetches short-lived HMAC credentials (coturn REST-auth mode) from the `/ice` endpoint. Point the game at your deployment by setting `ICE_ENDPOINT` in [`src/js/constants.js`](src/js/constants.js) to your https `/ice` URL and rebuilding (`npm run build`) — or test first without a rebuild via `localStorage.setItem('pb.iceurl.v1', 'https://turn.example.com/ice')`.
+
+  `.env` keys (all optional — `start.sh` fills the blanks):
+
+  | Key | Default | Purpose |
+  | --- | --- | --- |
+  | `TURN_SECRET` | **auto-generated** | Shared secret between coturn and the credentials endpoint |
+  | `TURN_HOST` | auto-detected public IP | Public IP or DNS name players reach the relay on |
+  | `TURN_PORT` | `3478` | TURN listening port (open udp+tcp in the firewall) |
+  | `TURN_MIN_PORT` / `TURN_MAX_PORT` | `49160` / `49200` | UDP relay range (open udp in the firewall) |
+  | `TURN_REALM` | `portalbreakout` | TURN auth realm label |
+  | `CREDS_BIND` / `CREDS_PORT` | `127.0.0.1` / `8788` | Credentials endpoint bind (reverse-proxy it over https) |
+  | `CREDS_TTL_S` | `7200` | Lifetime of minted credentials, seconds |
+  | `CORS_ORIGIN` | `https://lp177.github.io` | Allowed browser origins for `/ice` (comma list or `*`) |
+  | `TURN_EXTERNAL_IP` / `TURN_INTERNAL_IP` | unset | Only for 1:1-NAT hosts (see compose file) |
+
+- **Alternative without a server:** a free [metered.ca](https://www.metered.ca/stun-turn) account gives personal TURN credentials; both players register them in the browser console — no rebuild needed:
 
   ```js
   localStorage.setItem('pb.ice.v1', JSON.stringify([
@@ -65,4 +88,4 @@ Multiplayer uses [PeerJS](https://peerjs.com) (vendored) with its free public br
   ]));
   ```
 
-  Both players should set it. Custom servers are tried before the public defaults.
+  Custom servers are tried before the public defaults.
