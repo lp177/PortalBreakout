@@ -66,6 +66,17 @@ Multiplayer uses [PeerJS](https://peerjs.com) (vendored) with its free public br
 
   The TURN shared secret never reaches players' browsers: the game fetches short-lived HMAC credentials (coturn REST-auth mode) from the `/ice` endpoint. Point the game at your deployment by setting `ICE_ENDPOINT` in [`src/js/constants.js`](src/js/constants.js) to your https `/ice` URL and rebuilding (`npm run build`) — or test first without a rebuild via `localStorage.setItem('pb.iceurl.v1', 'https://turn.example.com/ice')`.
 
+  Verify the relay actually authenticates (a common failure is coturn silently ignoring an unreadable config and rejecting every allocation) — mint a credential and use it:
+
+  ```sh
+  curl -s https://turn.example.com/ice   # returns {username, credential, urls}
+  # then, on the TURN host:
+  turnutils_uclient -y -u <username> -w <credential> -p 3478 <public-ip>
+  # a clean run reports "tot_send_msgs" climbing with 0 lost packets
+  ```
+
+  Quadlet-based deploys additionally ship in [`server/turn/quadlet/`](server/turn/quadlet/) (rootless `podman` user). Two gotchas that cause "connection timed out" for hard-NAT peers even when STUN works: coturn's config must be **world-readable** (`chmod 644` — the image drops privileges and can't read a `600` file), and set `relay-ip`/`listening-ip` to the **public IP** so it doesn't advertise private/VPN relay candidates.
+
   `.env` keys (all optional — `start.sh` fills the blanks):
 
   | Key | Default | Purpose |

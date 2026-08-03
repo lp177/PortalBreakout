@@ -39,8 +39,13 @@ services:
       - --total-quota=200
       - --max-bps=131072
       - --stale-nonce=600
+      # Advertise ONLY the public IP as a relay candidate (otherwise coturn
+      # offers every local/VPN interface — 10.x, 172.17, WireGuard — which peers
+      # can't use). Uncomment and set to this host's public IP:
+      # - --relay-ip=${TURN_HOST}
+      # - --listening-ip=${TURN_HOST}
       # If the machine is behind 1:1 NAT (public IP not on the interface),
-      # uncomment and set both addresses:
+      # use external-ip instead of the two lines above:
       # - --external-ip=${TURN_EXTERNAL_IP}/${TURN_INTERNAL_IP}
 
   turn-credentials:

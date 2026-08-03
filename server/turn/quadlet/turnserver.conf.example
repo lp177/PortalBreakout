@@ -1,13 +1,27 @@
 # PortalBreakout coturn configuration (Quadlet deployment).
-# Copy to <home>/turn/turnserver.conf, chmod 600, and set static-auth-secret to
-# the SAME value as TURN_SECRET in <home>/turn/.env (the credentials endpoint
-# signs with it). Mirrors the hardening of ../docker-compose.yml.
+# Copy to <home>/turn/turnserver.conf and set static-auth-secret to the SAME
+# value as TURN_SECRET in <home>/turn/.env (the credentials endpoint signs with
+# it). Mirrors the hardening of ../docker-compose.yml.
+#
+# PERMISSIONS: the coturn image drops privileges to an unprivileged user, so a
+# root-owned mode-600 file is UNREADABLE inside the container (coturn silently
+# falls back to defaults → no auth → every relay allocation is rejected). Make
+# it world-readable and keep the parent dir tight instead:
+#   chmod 644 <home>/turn/turnserver.conf
+#   chmod 750 <home>/turn        # secret stays unreadable to other host users
 
 log-file=stdout
 listening-port=3478
 min-port=49160
 max-port=49200
 realm=portalbreakout
+
+# Bind + relay only via the public address, so coturn never advertises private
+# or VPN interfaces (10.x / 172.17 / WireGuard) as useless relay candidates.
+# Replace with this host's public IP.
+listening-ip=REPLACE_WITH_PUBLIC_IP
+listening-ip=127.0.0.1
+relay-ip=REPLACE_WITH_PUBLIC_IP
 
 # REST-credentials mode: clients present HMAC(secret, expiry) minted by the
 # turn-credentials service; the secret itself never reaches a browser.
