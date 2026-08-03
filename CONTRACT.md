@@ -175,6 +175,8 @@ export const net = {
 
 Heartbeat: both sides send `{t:'hb', ts}` every 1 s over the data channel; if nothing (any message counts) received for 3 s → emit `lost`; keep the Peer alive and if data resumes within 30 s → `reconnected`, else `closed`. Uses vendored PeerJS with default cloud broker; one reliable ordered DataChannel.
 
+ICE: net.js passes an explicit `config.iceServers` (public STUN + best-effort public TURN relays) instead of PeerJS defaults. Operators can prepend their own relay via `localStorage['pb.ice.v1']` (JSON array of RTCIceServer). `?relay=1` forces `iceTransportPolicy:'relay'` for TURN-path testing.
+
 Wire protocol (host authoritative, guest = top paddle):
 
 - guest→host `{t:'input', x, fire}` (x = paddle center in field coords, ~30/s), `{t:'hb', ts}`

@@ -6,6 +6,46 @@ const PEER_PREFIX = 'portalbreakout-';   // namespaced broker id; user-facing co
 const CODE_LEN = 5;
 const CODE_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'; // Crockford base32: no i/l/o/u
 
+// WebRTC needs a TURN relay whenever direct/STUN traversal fails (symmetric or
+// carrier-grade NAT — common on mobile networks). PeerJS's default config only
+// carries its overloaded community TURN, so real-world cross-network joins died
+// with "Could not connect". Explicit ICE set: public STUN + Open Relay Project
+// free TURN (shared public credentials by design, TCP fallback for strict
+// firewalls) + the PeerJS community TURN as one more candidate source.
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  {
+    urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443',
+           'turn:openrelay.metered.ca:443?transport=tcp'],
+    username: 'openrelayproject', credential: 'openrelayproject',
+  },
+  {
+    urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'],
+    username: 'peerjs', credential: 'peerjsp',
+  },
+];
+// ?relay=1 forces TURN-only candidates — simulates a symmetric-NAT pair for testing.
+const FORCE_RELAY = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).has('relay');
+
+// Optional operator-supplied relay, tried before the public defaults (public free
+// TURN is best-effort at most; see README "Multiplayer troubleshooting"):
+//   localStorage['pb.ice.v1'] = '[{"urls":"turn:turn.example.com:443","username":"u","credential":"c"}]'
+const customIce = () => {
+  try {
+    const arr = JSON.parse(localStorage.getItem('pb.ice.v1') ?? 'null');
+    return Array.isArray(arr) ? arr.filter(s => s && s.urls) : [];
+  } catch { return []; }
+};
+
+const peerOptions = () => ({
+  config: {
+    iceServers: [...customIce(), ...ICE_SERVERS],
+    ...(FORCE_RELAY ? { iceTransportPolicy: 'relay' } : {}),
+  },
+});
+
 const HB_SEND_MS = 1000;
 const WATCH_MS = 500;
 const LOST_AFTER_MS = 3000;
@@ -255,7 +295,7 @@ const host = (listener) => {
       const suffix = randomSuffix();
       const roomCode = CODE_PREFIX + suffix;
       let p;
-      try { p = new Peer(PEER_PREFIX + suffix); } catch { fail('Could not start multiplayer — try again'); return; }
+      try { p = new Peer(PEER_PREFIX + suffix, peerOptions()); } catch { fail('Could not start multiplayer — try again'); return; }
       peer = p;
       clearTimeout(setupTimer);
       setupTimer = setTimeout(() => {
@@ -319,10 +359,10 @@ const join = (roomCode, listener) => {
       reject(new Error(message));
     };
     let p;
-    try { p = new Peer(); } catch { fail('Could not start multiplayer — try again'); return; }
+    try { p = new Peer(peerOptions()); } catch { fail('Could not start multiplayer — try again'); return; }
     peer = p;
     setupTimer = setTimeout(() => {
-      if (p === peer && !settled) fail('Could not connect — try again');
+      if (p === peer && !settled) fail('Connection timed out — a VPN or strict network may block peer-to-peer. Try again');
     }, SETUP_TIMEOUT_MS);
     p.on('disconnected', () => {
       if (p === peer && !p.destroyed) { try { p.reconnect(); } catch { /* ignore */ } }
@@ -346,7 +386,10 @@ const join = (roomCode, listener) => {
         emit({ type: 'open' });
       });
       c.on('close', () => { if (!settled) fail('Connection failed — try again'); });
-      c.on('error', () => { if (!settled) fail('Could not connect — try again'); });
+      c.on('error', (err) => {
+        console.warn('net: guest connection error', err);
+        if (!settled) fail('Could not reach your friend — a VPN or strict network may block peer-to-peer. Try again');
+      });
     });
   });
 };

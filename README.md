@@ -51,3 +51,18 @@ Architecture and module contracts are documented in [CONTRACT.md](CONTRACT.md).
 | `js/main.js` | Bootstrap and wiring |
 
 Multiplayer uses [PeerJS](https://peerjs.com) (vendored) with its free public broker for signaling; gameplay traffic is peer-to-peer.
+
+### Multiplayer troubleshooting
+
+"Could not connect / connection timed out" when joining almost always means WebRTC couldn't traverse one player's NAT (mobile networks, CGNAT, VPNs, strict firewalls). Direct and STUN-assisted connections work for most pairs, but the hard cases need a **TURN relay**, and the free public relays bundled as a fallback are best-effort at most.
+
+- **Self-test:** open the game with `?relay=1` on both sides and try to join — if it fails, no working TURN relay is reachable and hard-NAT pairs won't connect either.
+- **Reliable fix:** provide your own TURN server (a small [coturn](https://github.com/coturn/coturn) instance, or a free [metered.ca](https://www.metered.ca/stun-turn) account) and register it in the browser console — no rebuild needed:
+
+  ```js
+  localStorage.setItem('pb.ice.v1', JSON.stringify([
+    { urls: 'turn:turn.example.com:443', username: 'user', credential: 'pass' },
+  ]));
+  ```
+
+  Both players should set it. Custom servers are tried before the public defaults.
