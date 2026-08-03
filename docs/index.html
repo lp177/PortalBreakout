@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#121212">
+<meta name="description" content="PortalBreakout — a Breakout arcade game where your paddles are portals. Play solo with both paddles or invite a friend.">
+<title>PortalBreakout</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='18' rx='22' ry='9' fill='none' stroke='%2340c4ff' stroke-width='6'/%3E%3Cellipse cx='32' cy='46' rx='22' ry='9' fill='none' stroke='%23ff9800' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<noscript><p class="noscript">PortalBreakout needs JavaScript to run.</p></noscript>
+
+<div id="app">
+
+  <!-- ============ MAIN MENU ============ -->
+  <main id="screen-menu" class="screen active" aria-label="Main menu">
+    <h1 class="game-title"><span class="title-portal">Portal</span><span class="title-breakout">Breakout</span></h1>
+    <p class="tagline">Your paddles are portals. Don't drop the ball — on either side.</p>
+    <nav class="menu-buttons" aria-label="Main">
+      <button id="btn-play" class="btn btn-primary" type="button">Play</button>
+      <button id="btn-levels" class="btn btn-tonal" type="button">Levels</button>
+      <button id="btn-multiplayer" class="btn btn-tonal" type="button" commandfor="dlg-multiplayer" command="show-modal">Play with a friend</button>
+      <button id="btn-options" class="btn btn-tonal" type="button" commandfor="dlg-options" command="show-modal">Options</button>
+      <button id="btn-how" class="btn btn-text" type="button" commandfor="dlg-how" command="show-modal">How to play</button>
+    </nav>
+    <p class="menu-footer">v1.0 — <a href="https://github.com/lp177/PortalBreakout" rel="noopener" target="_blank">source</a></p>
+  </main>
+
+  <!-- ============ LEVEL SELECT ============ -->
+  <main id="screen-levels" class="screen" aria-label="Level select">
+    <header class="screen-header">
+      <button id="btn-levels-back" class="btn btn-icon" type="button" aria-label="Back to menu">←</button>
+      <h2>Levels</h2>
+    </header>
+    <div id="level-grid" class="level-grid" role="list"></div>
+  </main>
+
+  <!-- ============ GAME ============ -->
+  <main id="screen-game" class="screen" aria-label="Game">
+    <div id="net-banner" class="net-banner" hidden role="status"></div>
+    <canvas id="game-canvas" aria-label="PortalBreakout playfield"></canvas>
+    <button id="btn-pause-touch" class="btn btn-icon pause-fab" type="button" aria-label="Pause">⏸</button>
+  </main>
+
+</div><!-- /#app -->
+
+<!-- ============ OPTIONS ============ -->
+<dialog id="dlg-options" aria-labelledby="dlg-options-title">
+  <h2 id="dlg-options-title">Options</h2>
+
+  <section aria-labelledby="opt-controls-title">
+    <h3 id="opt-controls-title">Controls</h3>
+    <p class="hint">Click a key, then press the new key. Esc cancels.</p>
+    <div id="binds-list" class="binds-list"></div>
+  </section>
+
+  <section aria-labelledby="opt-audio-title">
+    <h3 id="opt-audio-title">Audio</h3>
+    <div class="field-row">
+      <label for="opt-master">Master volume</label>
+      <input type="range" id="opt-master" min="0" max="100" step="1">
+    </div>
+    <div class="field-row">
+      <label for="opt-music">Music</label>
+      <input type="range" id="opt-music" min="0" max="100" step="1">
+    </div>
+    <div class="field-row">
+      <label for="opt-sfx">Sound effects</label>
+      <input type="range" id="opt-sfx" min="0" max="100" step="1">
+    </div>
+    <div class="field-row switch-row">
+      <label for="opt-muted">Mute all</label>
+      <input type="checkbox" id="opt-muted" class="switch" role="switch">
+    </div>
+  </section>
+
+  <section aria-labelledby="opt-gameplay-title">
+    <h3 id="opt-gameplay-title">Gameplay</h3>
+    <div class="field-row">
+      <label for="opt-effects">Visual effects</label>
+      <select id="opt-effects">
+        <option value="full">Full juice</option>
+        <option value="reduced">Reduced</option>
+      </select>
+    </div>
+    <div class="field-row switch-row">
+      <label for="opt-assist">Solo assist — top paddle mirrors bottom</label>
+      <input type="checkbox" id="opt-assist" class="switch" role="switch">
+    </div>
+  </section>
+
+  <div class="dialog-actions">
+    <button class="btn btn-primary" type="button" commandfor="dlg-options" command="close">Done</button>
+  </div>
+</dialog>
+
+<!-- ============ MULTIPLAYER ============ -->
+<dialog id="dlg-multiplayer" aria-labelledby="dlg-mp-title">
+  <h2 id="dlg-mp-title">Play with a friend</h2>
+  <p class="hint">One of you hosts (bottom portal), the other joins (top portal).</p>
+
+  <section class="mp-section" aria-labelledby="mp-host-title">
+    <h3 id="mp-host-title">Host a game</h3>
+    <button id="btn-mp-host" class="btn btn-primary" type="button">Create room</button>
+    <div id="mp-room-box" hidden>
+      <p>Share this code or link:</p>
+      <output id="mp-room-code" class="room-code"></output>
+      <button id="btn-mp-copy" class="btn btn-tonal" type="button">Copy invite link</button>
+    </div>
+  </section>
+
+  <section class="mp-section" aria-labelledby="mp-join-title">
+    <h3 id="mp-join-title">Join a game</h3>
+    <div class="field-row">
+      <label for="mp-join-code">Room code</label>
+      <input type="text" id="mp-join-code" autocomplete="off" spellcheck="false" placeholder="pb-xxxxx">
+    </div>
+    <button id="btn-mp-join" class="btn btn-primary" type="button">Join</button>
+  </section>
+
+  <p id="mp-status" class="mp-status" role="status"></p>
+
+  <div class="dialog-actions">
+    <button id="btn-mp-cancel" class="btn btn-text" type="button" commandfor="dlg-multiplayer" command="close">Close</button>
+  </div>
+</dialog>
+
+<!-- ============ HOW TO PLAY ============ -->
+<dialog id="dlg-how" aria-labelledby="dlg-how-title">
+  <h2 id="dlg-how-title">How to play</h2>
+  <ul class="how-list">
+    <li><strong>Paddles are portals.</strong> The ball never bounces off them — it teleports out of the other paddle, keeping its direction. Falling balls re-enter from the top; rising balls re-enter from the bottom.</li>
+    <li><strong>Guard both edges.</strong> Miss a paddle and the ball is gone. You steer by where the ball enters your paddle — edge hits curve the exit.</li>
+    <li><strong>Solo:</strong> arrows move the <span class="c-orange">bottom</span> paddle, A/D the <span class="c-blue">top</span> one (rebind in Options). Mouse drives bottom; on touch, each half of the screen drags its own paddle.</li>
+    <li><strong>Space</strong> launches the ball, <strong>Esc</strong> pauses.</li>
+    <li><strong>Break every brick</strong> to clear a level. Silver takes two hits, gold is indestructible, orange cores explode.</li>
+    <li><strong>Catch the drops</strong> with either paddle: multiball, lasers, fireball, sticky, expand, slow, extra life.</li>
+  </ul>
+  <div class="dialog-actions">
+    <button class="btn btn-primary" type="button" commandfor="dlg-how" command="close">Got it</button>
+  </div>
+</dialog>
+
+<!-- ============ PAUSE ============ -->
+<dialog id="dlg-pause" aria-labelledby="dlg-pause-title" closedby="none">
+  <h2 id="dlg-pause-title">Paused</h2>
+  <div class="dialog-actions dialog-actions-stack">
+    <button id="btn-resume" class="btn btn-primary" type="button">Resume</button>
+    <button id="btn-retry" class="btn btn-tonal" type="button">Restart level</button>
+    <button id="btn-quit" class="btn btn-text" type="button">Quit to menu</button>
+  </div>
+</dialog>
+
+<!-- ============ LEVEL END ============ -->
+<dialog id="dlg-level-end" aria-labelledby="le-title" closedby="none">
+  <h2 id="le-title">Level clear!</h2>
+  <div id="le-stats" class="le-stats"></div>
+  <div class="dialog-actions dialog-actions-stack">
+    <button id="btn-le-next" class="btn btn-primary" type="button">Next level</button>
+    <button id="btn-le-replay" class="btn btn-tonal" type="button">Replay</button>
+    <button id="btn-le-menu" class="btn btn-text" type="button">Menu</button>
+  </div>
+</dialog>
+
+<!-- ============ CONFIRM QUIT ============ -->
+<dialog id="dlg-confirm-quit" aria-labelledby="cq-title">
+  <h2 id="cq-title">Quit this game?</h2>
+  <p>Your progress in this level will be lost.</p>
+  <div class="dialog-actions">
+    <button id="btn-cq-no" class="btn btn-tonal" type="button" commandfor="dlg-confirm-quit" command="close">Keep playing</button>
+    <button id="btn-cq-yes" class="btn btn-danger" type="button">Quit</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="vendor/peerjs.min.js" defer></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

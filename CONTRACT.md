@@ -1,0 +1,229 @@
+# PortalBreakout — Architecture Contract
+
+**This document is the single source of truth for module boundaries.** Every module MUST export exactly the API described here and MUST NOT reach into another module's internals. All code is vanilla ES modules (`type="module"`), no build step, served statically from `/docs`. Target: Baseline-widely-available browser features; anything newer must be feature-detected with a graceful fallback. No external network dependencies except the optional PeerJS cloud broker for multiplayer signaling (`docs/vendor/peerjs.min.js` is vendored).
+
+## Game concept
+
+Classic Breakout, but paddles are **portals**. Two paddles: one at the bottom, one at the top of the field. The ball never bounces off a paddle — entering one paddle teleports it out of the other, **preserving its velocity direction** (a ball falling into the bottom paddle re-enters the field falling from the top paddle; a ball rising into the top paddle re-enters rising from the bottom paddle). Bricks sit in a band in the middle. The ball is lost if it crosses the top or bottom edge *outside* a paddle. Vertical direction only changes by hitting bricks; side walls bounce horizontally.
+
+- **Steering ("portal english")**: on teleport, the ball exits at the same relative offset from the exit paddle's center as it entered the entry paddle, and `vx += offset * PORTAL_ENGLISH` where `offset` is −1..1 relative to paddle half-width. This is the core skill mechanic.
+- Each teleport multiplies ball speed by `SPEED_UP` (cap `BALL_SPEED_MAX`), and resets the combo.
+- Solo: one player controls both paddles (separate rebindable keys; mouse moves bottom paddle; touch: bottom half of screen drags bottom paddle, top half the top paddle). Optional "assist" setting makes the top paddle mirror the bottom one.
+- Multiplayer (2P): host = bottom paddle + authoritative physics; guest = top paddle, sends input, renders host state snapshots.
+
+## Constants (defined in `js/constants.js`, imported everywhere)
+
+```js
+export const FIELD_W = 780, FIELD_H = 1100;      // logical units; canvas scales to fit
+export const GRID_COLS = 13, GRID_ROWS = 14;      // brick grid
+export const BRICK_W = 60, BRICK_H = 34;
+export const GRID_TOP = 260;                      // y of first brick row
+export const PADDLE_W = 120, PADDLE_H = 18, PADDLE_W_EXPANDED = 180;
+export const PADDLE_TOP_Y = 70, PADDLE_BOTTOM_Y = 1030;  // paddle center-line y
+export const PADDLE_SPEED = 700;                  // px/s for keyboard control
+export const BALL_R = 9, BALL_SPEED = 420, BALL_SPEED_MAX = 900;
+export const SPEED_UP = 1.04, PORTAL_ENGLISH = 120;  // vx += offset * PORTAL_ENGLISH on teleport
+export const MIN_VY_RATIO = 0.25;                 // anti horizontal-lock: |vy| >= ratio*speed
+export const POWERUP_SPEED = 170, POWERUP_R = 16, POWERUP_DROP_CHANCE = 0.11;
+export const LIVES_START = 3, MAX_BALLS = 6;
+export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progress.v1';
+```
+
+## File map (all paths under `docs/`)
+
+| File | Owner module | Purpose |
+|---|---|---|
+| `index.html` | (fixed, already written) | All screens, dialogs, DOM ids |
+| `css/style.css` | ui | Material dark theme, ripple, screens, HUD, responsive |
+| `js/constants.js` | (fixed) | shared constants above |
+| `js/storage.js` | (fixed) | settings + progress persistence |
+| `js/levels.js` | levels | 50 level definitions + brick type table |
+| `js/audio.js` | audio | procedural WebAudio SFX + music |
+| `js/particles.js` | particles | particles, screen shake, floating text, portal FX |
+| `js/input.js` | input | keybinds, rebinding, mouse/touch, per-frame paddle intent |
+| `js/net.js` | net | PeerJS session, heartbeat, disconnect detection |
+| `js/engine.js` | engine | game simulation + canvas rendering + HUD |
+| `js/main.js` | engine | bootstrap, wires ui/engine/net/audio together |
+| `js/ui.js` | ui | menus, ripple, level grid, rebind UI, dialogs |
+| `vendor/peerjs.min.js` | (vendored) | PeerJS 1.5.5 |
+
+Load order: `index.html` loads `vendor/peerjs.min.js` (classic script, defines global `Peer`) then `js/main.js` as module.
+
+## `js/levels.js`
+
+```js
+export const BRICK_TYPES = {
+  // char → { hp, points, color, name } ; hp Infinity for gold
+  '1': { hp: 1, points: 50,  color: '#ef5350', name: 'red' },
+  '2': { hp: 1, points: 60,  color: '#ff9800', name: 'orange' },
+  '3': { hp: 1, points: 70,  color: '#ffeb3b', name: 'yellow' },
+  '4': { hp: 1, points: 80,  color: '#66bb6a', name: 'green' },
+  '5': { hp: 1, points: 90,  color: '#26c6da', name: 'cyan' },
+  '6': { hp: 1, points: 100, color: '#42a5f5', name: 'blue' },
+  '7': { hp: 1, points: 110, color: '#ab47bc', name: 'purple' },
+  '8': { hp: 1, points: 120, color: '#ec407a', name: 'pink' },
+  'S': { hp: 2, points: 150, color: '#b0bec5', name: 'silver' },
+  'G': { hp: Infinity, points: 0, color: '#ffd54f', name: 'gold' },   // indestructible, excluded from completion
+  'E': { hp: 1, points: 150, color: '#ff7043', name: 'explosive' },   // destroys 3×3 neighborhood, chains
+  'P': { hp: 1, points: 100, color: '#7e57c2', name: 'powerup' },     // guaranteed powerup drop
+};
+// LEVELS: array of 50. rows: exactly GRID_ROWS strings of exactly GRID_COLS chars ('.' = empty).
+export const LEVELS = [ { name: 'Aperture Rows', rows: [ '.............', /* ×14 */ ] }, /* … */ ];
+```
+
+Levels are inspired by famous Breakout/Arkanoid layouts (rainbow rows, pyramid, space invader, DOH face, checkerboard, tunnels, fortress…) plus Portal-themed pixel art (companion cube, cake, turret, portal rings, "PB" letters…). Difficulty ramps: early levels sparse & soft colors, later ones dense with S/G/E. Every level MUST be completable (≥1 destructible brick; no destructible brick fully enclosed by gold).
+
+## `js/storage.js` (already written — read it)
+
+```js
+export function loadSettings() → settings object (deep-merged over defaults)
+export function saveSettings(patch)               // shallow-merge + persist
+export function loadProgress() → { levels: { [idx]: { completed, bestScore, bestTimeMs } } }
+export function recordLevelResult(idx, { score, timeMs, completed })
+export function isUnlocked(idx, progress)          // level 0 always; else levels[idx-1].completed
+export const DEFAULT_SETTINGS                       // see shape below
+```
+
+Settings shape (also the rebindable actions list):
+```js
+{
+  binds: {
+    bottomLeft: 'ArrowLeft', bottomRight: 'ArrowRight', bottomFire: 'ArrowUp',
+    topLeft: 'KeyA', topRight: 'KeyD', topFire: 'KeyW',
+    launch: 'Space', pause: 'Escape',
+  },                                        // values are KeyboardEvent.code
+  audio: { master: 0.8, music: 0.5, sfx: 0.9, muted: false },
+  effects: 'full' | 'reduced',              // default 'full' unless prefers-reduced-motion
+  assist: false,                            // top paddle mirrors bottom in solo
+  playerName: '',
+}
+```
+
+## `js/audio.js`
+
+All sounds synthesized with WebAudio (no assets). Must lazy-init the `AudioContext` on first user gesture (`init()` is idempotent; call it from any click/keydown).
+
+```js
+export const audio = {
+  init(),                          // create/resume AudioContext (safe to call repeatedly)
+  applySettings(settings.audio),   // volumes + mute
+  sfx(name, opts = {}),            // fire-and-forget; opts.combo (int) raises pitch for 'brick'
+  music(track|null),               // 'menu' | 'game' | null → stop; light generative loop, ~-20LUFS feel
+};
+```
+
+SFX names (exact): `portal` (teleport whoosh/zap), `brick`, `silver`, `gold` (clank), `explode`, `wall`, `powerup` (catch), `drop` (powerup spawns), `laser`, `lifeLost`, `levelClear`, `gameOver`, `click` (UI), `launch`, `stick`, `countdown`, `win`.
+
+## `js/particles.js`
+
+Owns all visual juice. Engine calls these; the system draws onto the game canvas ctx each frame. Honors `setEffectsLevel('full'|'reduced')` — 'reduced' = no shake, minimal particles, no slow-mo flash.
+
+```js
+export const fx = {
+  setEffectsLevel(level),
+  update(dt),                       // dt seconds
+  draw(ctx),                        // draw all live effects (called after entities)
+  shakeOffset() → {x, y},           // engine translates canvas by this before drawing world
+  brickBurst(x, y, color, count?),  // shard explosion
+  explosion(x, y),                  // big boom (E bricks)
+  portalFlash(x, y, side),          // side: 'top'|'bottom' — orange (bottom) / blue (top) swirl
+  trail(x, y, color),               // ball trail puff (engine calls per-frame per ball)
+  floatText(x, y, text, color?),    // rising score/combo text
+  sparks(x, y, color, dir?),        // small impact sparks (walls, paddle catches)
+  confetti(),                       // level clear celebration (full-field)
+  shake(strength),                  // 0..1
+  clear(),
+};
+```
+
+## `js/input.js`
+
+```js
+export const input = {
+  attach(canvas),                       // install all listeners (kbd on window, pointer/touch on canvas)
+  applySettings(settings),              // update binds + assist
+  setMapper(fn),                        // fn(clientX, clientY) → {x, y} field coords (engine provides)
+  state() → {
+    bottom: { move: -1|0|1, targetX: number|null, fire: bool },   // targetX = pointer-driven absolute x
+    top:    { move: -1|0|1, targetX: number|null, fire: bool },
+    launch: bool, pause: bool,          // pause is edge-triggered (true once per press)
+  },
+  captureNext(cb),                      // rebind mode: next keydown → cb(code); Escape cancels → cb(null)
+  reset(),                              // clear held state (call on blur / screen change)
+};
+```
+
+Pointer rules: mouse always drives the **bottom** paddle (`targetX`); touches drive whichever paddle's half of the field they start in (multi-touch: one finger per half). Keyboard `move` beats stale `targetX` (a fresh key press clears that paddle's `targetX` until the pointer moves again).
+
+## `js/net.js`
+
+```js
+export const net = {
+  host(cb) → Promise<roomCode>,     // create PeerJS room; roomCode: 'pb-' + 5 chars base32
+  join(roomCode, cb) → Promise<void>,
+  send(msg),                        // JSON-serializable; silently drops if not connected
+  close(),
+  get connected() → bool, get role() → 'host'|'guest'|null,
+}
+// cb(event) receives: { type: 'open' } | { type: 'data', msg } | { type: 'peer-joined' }
+//   | { type: 'lost' }       — heartbeat missed ≥3s or connection closed: show banner, pause game
+//   | { type: 'reconnected' }
+//   | { type: 'closed' }     — final (peer destroyed / gave up after 30 s)
+//   | { type: 'error', message }
+```
+
+Heartbeat: both sides send `{t:'hb', ts}` every 1 s over the data channel; if nothing (any message counts) received for 3 s → emit `lost`; keep the Peer alive and if data resumes within 30 s → `reconnected`, else `closed`. Uses vendored PeerJS with default cloud broker; one reliable ordered DataChannel.
+
+Wire protocol (host authoritative, guest = top paddle):
+- guest→host `{t:'input', x, fire}` (x = paddle center in field coords, ~30/s), `{t:'hb', ts}`
+- host→guest `{t:'state', balls:[[x,y],…], pb:x, pt:x, lasers:[[x,y,dir],…], pups:[[x,y,kind],…], score, lives, combo}` ~25/s
+- host→guest `{t:'brick', idx, hp}` (hp left; 0 = destroyed), `{t:'level', idx}` (load level, resets bricks), `{t:'ev', name, x?, y?, extra?}` (play sfx/fx at position), `{t:'phase', v}` (`countdown|playing|paused|resumed|levelclear|gameover|backtomenu`)
+
+## `js/engine.js`
+
+```js
+export const engine = {
+  mount(canvas),                     // set up ctx, resize observer, input.attach + input.setMapper
+  startSolo(levelIdx, opts?),        // opts: { replay?: bool }
+  startHost(levelIdx),               // multiplayer host (bottom paddle local)
+  startGuest(),                      // multiplayer guest (renders snapshots, sends input)
+  onNetMessage(msg),                 // main.js forwards net 'data' events here
+  pause(reason?), resume(), quit(),  // quit → stops loop, engine emits 'backtomenu'
+  setCallbacks({ onLevelEnd, onGameOver, onPauseChange }),
+    // onLevelEnd({ levelIdx, score, timeMs, cleared }) — show dialog; engine idles until told
+  nextLevel(), retryLevel(),         // called by main.js from the level-end dialog
+  applySettings(settings),
+}
+```
+
+Rules of play: ball starts stuck to bottom paddle (top paddle for guest? no — always bottom; host launches). `launch` releases it at 60° up ±20° random. Lives shared (multiplayer too). Powerups: `multi` (split each ball into 3, cap MAX_BALLS), `expand` (both paddles ×1.5, 15 s), `slow` (ball speeds ×0.7 floor BALL_SPEED, 10 s), `sticky` (next 3 paddle entries hold the ball on the *exit* paddle until launch), `laser` (both paddles can fire for 10 s, 4 shots/s max), `life` (+1), `fire` (fireball pierces destructible bricks, 8 s). Powerups spawned in the upper half of the brick band float **up** (top paddle catches), lower half fall **down**. Combo: +1 per brick in a single volley (resets on portal pass); score `points × (1 + combo*0.1)` rounded. Slow-mo ~0.3 s on last brick. HUD (score, lives ×♥, level name, combo) drawn on canvas. Countdown 3-2-1 on level start/resume-from-life-loss. All juice via `fx.*`, all sound via `audio.sfx`.
+
+## `index.html` DOM contract (already written — read it; do not rename ids)
+
+Screens: `#screen-menu`, `#screen-levels`, `#screen-game` — exactly one has class `active`. Dialogs: `#dlg-options`, `#dlg-multiplayer`, `#dlg-how`, `#dlg-pause`, `#dlg-level-end`, `#dlg-confirm-quit`. Canvas: `#game-canvas`. Net banner: `#net-banner`. See file for all button/label ids.
+
+## `js/ui.js`
+
+```js
+export const ui = {
+  init({ onAction }),   // wires all menus; onAction(name, data) with names:
+    // 'play' {levelIdx}, 'replay' {levelIdx}, 'host', 'join' {code}, 'options-changed' {settings},
+    // 'pause', 'resume', 'retry', 'next-level', 'quit-to-menu', 'cancel-mp'
+  showScreen('menu'|'levels'|'game'),
+  refreshLevelGrid(),                        // re-render from storage progress + LEVELS
+  showLevelEnd({ cleared, score, best, levelIdx, isLast }),
+  showPause(), hidePause(),
+  netStatus('idle'|'waiting'|'connected'|'lost'|'closed', data?),  // banner + mp dialog states
+  showRoomCode(code), toast(text),
+}
+```
+
+ui.js also implements: Material ripple on `.btn` (pointer-centered; keyboard Enter/Space → centered ripple), rebind capture flow (click bind button → "press a key…" → `input.captureNext`), options form ↔ settings sync, level grid (50 tiles: locked 🔒 / done ✓ + best score / current ▶), and dialog fallback for browsers without invoker commands (feature-detect `commandForElement`).
+
+## Visual & UX rules (from user's global design standards)
+
+Dark Material theme. Tokens in `:root`: `--bg: #121212`, `--surface: #1e1e1e`, `--surface-2: #2a2a2a`, `--primary: #ff9800` (portal orange), `--secondary: #40c4ff` (portal blue), `--text: rgba(255,255,255,.92)`, `--text-dim: rgba(255,255,255,.6)`, `--danger: #ef5350`. Buttons: filled (primary) & tonal variants, ripple, visible `:focus-visible` ring, hover/active elevation, disabled states. Dialogs: elevated surface, `::backdrop` blur+dim. Respect `prefers-reduced-motion` (no ripple scale anim, no menu transitions; game fx default to 'reduced'). Semantic HTML, labels on all inputs, full keyboard navigation. Portal identity: orange = bottom paddle, blue = top paddle, everywhere (menus, HUD, paddles, portal fx).
+
+## Multiplayer flow
+
+Host: menu → Multiplayer → "Create room" → room code + share link (`?join=CODE` URL) shown → friend joins → host picks level → play. Guest: Multiplayer → paste code (or arrive via link → dialog pre-filled) → "Join". On `lost`: engine pauses, banner "⚠ Connection lost — waiting…", dialog offers **Wait** / **Continue solo** (engine converts to solo: local player takes both paddles) / **Quit**. On `reconnected` while waiting: countdown + resume. Guest side mirrors the same UX.
