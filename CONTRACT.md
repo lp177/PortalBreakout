@@ -1,6 +1,6 @@
 # PortalBreakout — Architecture Contract
 
-**This document is the single source of truth for module boundaries.** Every module MUST export exactly the API described here and MUST NOT reach into another module's internals. All code is vanilla ES modules (`type="module"`), no build step, served statically from `/docs`. Target: Baseline-widely-available browser features; anything newer must be feature-detected with a graceful fallback. No external network dependencies except the optional PeerJS cloud broker for multiplayer signaling (`docs/vendor/peerjs.min.js` is vendored).
+**This document is the single source of truth for module boundaries.** Every module MUST export exactly the API described here and MUST NOT reach into another module's internals. All code is vanilla ES modules (`type="module"`). Source lives in `/src`; Vite builds it into `/docs`, which is the committed production bundle GitHub Pages serves (`npm run dev` for local dev, `npm run build` before committing). Never edit `/docs` by hand. Target: Baseline-widely-available browser features; anything newer must be feature-detected with a graceful fallback. No external network dependencies except the optional PeerJS cloud broker for multiplayer signaling (`src/public/vendor/peerjs.min.js` is vendored and copied verbatim into the build).
 
 ## Game concept
 
@@ -29,10 +29,10 @@ export const LIVES_START = 3, MAX_BALLS = 6;
 export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progress.v1';
 ```
 
-## File map (all paths under `docs/`)
+## File map (all paths under `src/`)
 
 | File | Owner module | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `index.html` | (fixed, already written) | All screens, dialogs, DOM ids |
 | `css/style.css` | ui | Material dark theme, ripple, screens, HUD, responsive |
 | `js/constants.js` | (fixed) | shared constants above |
@@ -45,9 +45,9 @@ export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progres
 | `js/engine.js` | engine | game simulation + canvas rendering + HUD |
 | `js/main.js` | engine | bootstrap, wires ui/engine/net/audio together |
 | `js/ui.js` | ui | menus, ripple, level grid, rebind UI, dialogs |
-| `vendor/peerjs.min.js` | (vendored) | PeerJS 1.5.5 |
+| `public/vendor/peerjs.min.js` | (vendored) | PeerJS 1.5.5 (copied as-is to `docs/vendor/`) |
 
-Load order: `index.html` loads `vendor/peerjs.min.js` (classic script, defines global `Peer`) then `js/main.js` as module.
+Load order: `index.html` loads `vendor/peerjs.min.js` (classic script, defines global `Peer`) then `js/main.js` as module (bundled by Vite in production).
 
 ## `js/levels.js`
 
@@ -85,6 +85,7 @@ export const DEFAULT_SETTINGS                       // see shape below
 ```
 
 Settings shape (also the rebindable actions list):
+
 ```js
 {
   binds: {
@@ -175,6 +176,7 @@ export const net = {
 Heartbeat: both sides send `{t:'hb', ts}` every 1 s over the data channel; if nothing (any message counts) received for 3 s → emit `lost`; keep the Peer alive and if data resumes within 30 s → `reconnected`, else `closed`. Uses vendored PeerJS with default cloud broker; one reliable ordered DataChannel.
 
 Wire protocol (host authoritative, guest = top paddle):
+
 - guest→host `{t:'input', x, fire}` (x = paddle center in field coords, ~30/s), `{t:'hb', ts}`
 - host→guest `{t:'state', balls:[[x,y],…], pb:x, pt:x, lasers:[[x,y,dir],…], pups:[[x,y,kind],…], score, lives, combo}` ~25/s
 - host→guest `{t:'brick', idx, hp}` (hp left; 0 = destroyed), `{t:'level', idx}` (load level, resets bricks), `{t:'ev', name, x?, y?, extra?}` (play sfx/fx at position), `{t:'phase', v}` (`countdown|playing|paused|resumed|levelclear|gameover|backtomenu`)

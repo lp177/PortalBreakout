@@ -28,11 +28,12 @@ Mouse moves the bottom paddle. On touch screens, drag on the bottom or top half 
 
 ## Development
 
-No build step. The whole game is static vanilla ES modules in [`/docs`](docs/), served by GitHub Pages.
+Vanilla ES modules, no framework. Source lives in [`/src`](src/); [Vite](https://vite.dev) bundles it into [`/docs`](docs/), the committed production build that GitHub Pages serves. Never edit `/docs` by hand.
 
 ```sh
-python3 -m http.server 8000 --directory docs
-# open http://localhost:8000
+npm install
+npm run dev      # dev server with hot reload
+npm run build    # rebuild /docs before committing
 ```
 
 Architecture and module contracts are documented in [CONTRACT.md](CONTRACT.md).
