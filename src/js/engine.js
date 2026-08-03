@@ -1352,6 +1352,10 @@ const guestPhase = (v, msg = {}) => {
   }
 };
 
+// Coerce an untrusted peer-supplied level index to a valid array index, or null.
+const safeLevelIdx = (v) =>
+  (Number.isInteger(v) && v >= 0 && v < LEVELS.length) ? v : null;
+
 const onNetMessage = (msg) => {
   if (!msg || typeof msg !== 'object' || msg.t === 'hb') return;
   if (mode !== 'guest') {
@@ -1370,6 +1374,8 @@ const onNetMessage = (msg) => {
       if (phase === 'idle') phase = 'playing';
       break;
     case 'level': {
+      const idx = safeLevelIdx(msg.idx);
+      if (idx === null) break; // ignore malformed level message from the peer
       // an arena reload mid-match (cycling / resync) keeps versus match state;
       // anything else (fresh match — msg.fresh, rematch, co-op level) starts
       // clean. Without the fresh flag a host mid-match Retry (setupMatch) is
@@ -1377,8 +1383,8 @@ const onNetMessage = (msg) => {
       const cycling = gameMode === 'versus' && msg.mode === 'versus' && !msg.fresh
         && phase !== 'idle' && phase !== 'matchend';
       gameMode = msg.mode === 'versus' ? 'versus' : 'coop';
-      buildBricks(msg.idx);
-      levelIdx = msg.idx;
+      buildBricks(idx);
+      levelIdx = idx;
       score = 0; combo = 0; lives = LIVES_START; elapsed = 0;
       powerups = []; lasers = []; balls = [];
       snapPrev = null; snapCur = null;
@@ -1401,8 +1407,9 @@ const onNetMessage = (msg) => {
       // resync diff (host re-sent state after a reconnect): apply silently
       if (Array.isArray(msg.diff)) {
         for (const d of msg.diff) {
-          const b = bricks[d?.[0]];
-          if (!b) continue;
+          if (!Array.isArray(d) || !Number.isInteger(d[0])) continue;
+          const b = bricks[d[0]];
+          if (!b) continue; // integer index → own element or undefined, never a proto
           if (d[1] > 0) b.hp = d[1];
           else b.alive = false;
         }
@@ -1412,6 +1419,7 @@ const onNetMessage = (msg) => {
       break;
     }
     case 'brick': {
+      if (!Number.isInteger(msg.idx)) break; // never index with a string like "__proto__"
       const b = bricks[msg.idx];
       if (!b) break;
       if (msg.hp > 0) {
@@ -1431,7 +1439,8 @@ const onNetMessage = (msg) => {
       break;
     }
     case 'ev':
-      GUEST_EV[msg.name]?.(msg);
+      // own-property only: never resolve msg.name up the prototype chain
+      if (typeof msg.name === 'string' && Object.hasOwn(GUEST_EV, msg.name)) GUEST_EV[msg.name](msg);
       break;
     case 'phase':
       guestPhase(msg.v, msg);

@@ -1,0 +1,37 @@
+# PortalBreakout coturn configuration (Quadlet deployment).
+# Copy to <home>/turn/turnserver.conf, chmod 600, and set static-auth-secret to
+# the SAME value as TURN_SECRET in <home>/turn/.env (the credentials endpoint
+# signs with it). Mirrors the hardening of ../docker-compose.yml.
+
+log-file=stdout
+listening-port=3478
+min-port=49160
+max-port=49200
+realm=portalbreakout
+
+# REST-credentials mode: clients present HMAC(secret, expiry) minted by the
+# turn-credentials service; the secret itself never reaches a browser.
+use-auth-secret
+static-auth-secret=REPLACE_WITH_TURN_SECRET
+
+fingerprint
+no-software-attribute
+no-multicast-peers
+stale-nonce=600
+
+# Abuse limits: a game data channel needs a few KB/s; cap everything else.
+user-quota=12
+total-quota=200
+max-bps=131072
+
+# Relay is for internet peers only — refuse relaying into local networks.
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+
+# Behind 1:1 NAT only: uncomment with your addresses.
+#external-ip=PUBLIC_IP/PRIVATE_IP

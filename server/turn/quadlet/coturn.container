@@ -1,0 +1,23 @@
+# PortalBreakout TURN relay — rootless Quadlet unit (alternative to the compose
+# stack; matches hosts that run containers via podman systemd generation).
+# Expects %h/turn/turnserver.conf — copy turnserver.conf.example and fill the
+# static-auth-secret (same value as TURN_SECRET in %h/turn/.env).
+[Unit]
+Description=PortalBreakout TURN relay (coturn)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=docker.io/coturn/coturn:4-alpine
+ContainerName=turn-coturn
+# TURN needs its listening port + a UDP relay range; host networking is the
+# standard choice (rootless-safe: everything binds >1024).
+Network=host
+Volume=%h/turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+Exec=-c /etc/coturn/turnserver.conf
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

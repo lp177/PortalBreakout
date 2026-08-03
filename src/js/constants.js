@@ -17,7 +17,7 @@ export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progres
 // URL of a TURN-credentials endpoint (see server/turn/ and README "Multiplayer
 // troubleshooting"). Empty = disabled; the game then relies on public STUN and
 // best-effort public relays only. Example: 'https://turn.example.com/ice'
-export const ICE_ENDPOINT = '';
+export const ICE_ENDPOINT = 'https://lp177.fr/ice';
 
 // Versus mode (see CONTRACT.md "Versus mode")
 export const VS_LIVES = 3, VS_LIFE_MAX = 5;
