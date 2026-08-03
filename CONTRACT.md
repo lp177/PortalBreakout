@@ -346,3 +346,13 @@ Flow:
 Wire additions: host→guest `{t:'lobby', mode?, map?}` (enter/refresh lobby) and `{t:'kick'}`. Both are lobby-control messages handled in `main.js`'s net `data` branch (peeked before `engine.onNetMessage`, which ignores unknown `t`).
 
 New/changed `ui.js` API: `ui.showLobby({role, code, connected})`, `ui.updateLobby({connected, guestName?})`, `ui.hideLobby()`; new `onAction` names: `'lobby-start' {mode, levelIdx}`, `'lobby-kick'`, `'lobby-leave'`. `#dlg-multiplayer`'s old inline room-box/copy may remain but the lobby is the canonical share surface. Rematch still reuses the existing path (host relays via the start messages); the lobby is only for initial setup.
+
+## Co-op lives model (v1.2.1)
+
+Three distinct lives models, keyed by mode:
+
+- **Solo campaign** (`mode === 'solo'`, gameMode `coop`): unchanged — one shared `lives` counter (`LIVES_START = 3`), reset per level, single ♥ row in the HUD, game over at 0.
+- **Co-op multiplayer** (`gameMode === 'coop'` AND `mode` is `host`/`guest`): **each player has their own hearts** (`vsLives.bottom` / `vsLives.top`, start 3). A ball lost past your edge costs *your* side one heart (never below 0). On **level clear, every side below 3 regains one heart** (0→1 revives a downed partner). **Game over only when BOTH sides reach 0.** Score stays shared. HUD shows two heart rows (orange bottom-left, blue top-right) + shared score/combo/level name. Lives persist across levels (healed), not reset per level.
+- **Versus** (`gameMode === 'versus'`, AI or MP): per-side lives, **first side to 0 loses** (match ends immediately). Unchanged from v1.1.
+
+Wire: co-op MP `state` now carries `lb`/`lt` (per-side lives); the co-op `level` message carries `lb`/`lt` for initial/ resync sync. `{t:'ev', name:'lifeLost', side}` carries `side` in co-op too so the guest mirrors the correct heart. Guest is always MP, so `gameMode === 'coop'` on the guest means co-op MP (two heart rows). Default friend games are **versus** (each player their own lives); co-op is the other lobby Mode option.

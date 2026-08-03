@@ -216,7 +216,9 @@ const setupLevel = (idx) => {
   vignetteT = 0; resumeT = 0; pausedFrom = null; pauseReason = null;
   buildBricks(idx);
   fx.clear();
-  hostSend({ t: 'level', idx });
+  // co-op MP: carry per-side hearts on the level message so the guest syncs at
+  // load (before the first state snapshot) and on nextLevel with healed lives
+  hostSend(coopMp() ? { t: 'level', idx, lb: vsLives.bottom, lt: vsLives.top } : { t: 'level', idx });
   beginCountdown();
 };
 
@@ -234,7 +236,12 @@ const startLoop = () => {
 
 // ---- lifecycle ----
 const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; gameMode = 'coop'; ai = null; startLoop(); setupLevel(idx); };
-const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; guestPadVel = 0; lastGuestInputT = 0; startLoop(); setupLevel(idx); };
+const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; guestPadVel = 0; lastGuestInputT = 0; vsLives = { bottom: LIVES_START, top: LIVES_START }; startLoop(); setupLevel(idx); };
+
+// Co-op multiplayer = shared field, per-player hearts (vsLives), heal on clear,
+// game over only when BOTH sides hit 0. Solo campaign (mode 'solo') keeps the
+// single shared `lives` counter; versus has its own first-to-zero rules.
+const coopMp = () => gameMode === 'coop' && mode !== 'solo';
 const startGuest = () => {
   mode = 'guest';
   gameMode = 'coop'; ai = null;      // versus arrives via {t:'level', mode:'versus'}
@@ -390,6 +397,9 @@ const nextLevel = () => {
 const retryLevel = () => {
   if (mode === 'guest') return;
   if (gameMode === 'versus') { setupMatch(levelIdx); return; }  // restart the match, same arena
+  // co-op MP: a retry is a fresh attempt — restore both players to full hearts
+  // (otherwise retrying after a both-dead game over would start at 0/0)
+  if (coopMp()) vsLives = { bottom: LIVES_START, top: LIVES_START };
   setupLevel(levelIdx);
 };
 
@@ -494,6 +504,8 @@ const hostFrame = (dt, inp) => {
         if (phase === 'serve') {
           msg.sv = balls.some((b) => b.stuck && b.stuckTo === 'top') ? 'top' : 'bottom';
         }
+      } else if (coopMp()) {
+        msg.lb = vsLives.bottom; msg.lt = vsLives.top;  // per-side hearts (shared score stays in msg.score)
       }
       hostSend(msg);
     }
@@ -787,7 +799,8 @@ const moveBalls = (dt) => {
       const exitSide = b.y + BALL_R < 0 ? 'top' : 'bottom';
       balls.splice(i, 1);
       if (gameMode === 'versus') vsLoseLife(exitSide);  // every ball counts, per side
-      else if (balls.length === 0) loseLife();
+      else if (coopMp()) coopLoseLife(exitSide);        // co-op MP: the side that missed
+      else if (balls.length === 0) loseLife();          // solo: shared lives
       continue;
     }
 
@@ -977,6 +990,7 @@ const applyPowerup = (kind, x, y, catcher = 'bottom') => {
       break;
     case 'life':
       if (gameMode === 'versus') vsLives[catcher] = Math.min(vsLives[catcher] + 1, VS_LIFE_MAX);
+      else if (coopMp()) vsLives[catcher] = Math.min(vsLives[catcher] + 1, LIVES_START); // heal the catcher's side
       else lives = Math.min(lives + 1, 9);
       break;
     case 'fire': timers.fire = 8; break;     // global ball effect, even in versus
@@ -1054,6 +1068,36 @@ const loseLife = () => {
     hostEv('gameOver');
     callbacks.onGameOver?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000) });
     callbacks.onLevelEnd?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000), cleared: false });
+  }
+};
+
+// ---- co-op multiplayer: per-side hearts, both-must-die game over ----
+const coopLoseLife = (side) => {
+  if (clearPending || phase === 'levelclear') return;
+  if (vsLives[side] > 0) {
+    vsLives[side]--;
+    combo = 0;
+    audio.sfx('lifeLost');
+    fx.shake(0.8);
+    vignetteT = 0.6;
+    hostSend({ t: 'ev', name: 'lifeLost', side }); // side → guest mirrors the right heart
+  }
+  // cooperative game over only when BOTH players are out
+  if (vsLives.bottom <= 0 && vsLives.top <= 0) {
+    delayed = [];
+    phase = 'gameover';
+    audio.sfx('gameOver');
+    hostSend({ t: 'phase', v: 'gameover' });
+    hostEv('gameOver');
+    callbacks.onGameOver?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000) });
+    callbacks.onLevelEnd?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000), cleared: false });
+    return;
+  }
+  // one side may be down while the other plays on — keep serving until both die
+  if (balls.length === 0) {
+    delayed = [];
+    balls = [newBall()];
+    beginCountdown();
   }
 };
 
@@ -1175,6 +1219,14 @@ const finishClear = () => {
     loadArena((levelIdx + 1) % LEVELS.length, lastBreaker);
     return;
   }
+  // co-op MP: clearing a level heals every side below full (0→1 revives a
+  // downed partner). Lives persist into the next level (setupLevel won't reset
+  // them). The next state broadcast carries the healed lb/lt to the guest.
+  if (coopMp()) {
+    for (const s of ['bottom', 'top']) {
+      if (vsLives[s] < LIVES_START) vsLives[s]++;
+    }
+  }
   phase = 'levelclear';
   audio.sfx('levelClear');
   fx.confetti();
@@ -1195,6 +1247,7 @@ const resync = () => {
     else if (b.hp !== Infinity && b.hp !== BRICK_TYPES[b.type].hp) diff.push([i, b.hp]);
   });
   if (gameMode === 'versus') sendVsLevel(diff);  // carries mode + per-side lives/scores
+  else if (coopMp()) hostSend({ t: 'level', idx: levelIdx, diff, lb: vsLives.bottom, lt: vsLives.top });
   else hostSend({ t: 'level', idx: levelIdx, diff });
   if (phase === 'playing' || phase === 'serve') {
     hostSend({ t: 'phase', v: 'playing' });
@@ -1339,6 +1392,8 @@ const renderGuestState = (dt) => {
     // serve cue: present only while the host is in its 'serve' phase, so it
     // self-clears the moment the ball is launched
     vsServeSide = bm.sv === 'top' || bm.sv === 'bottom' ? bm.sv : null;
+  } else if (gameMode === 'coop') { // guest is always MP → co-op MP: per-side hearts
+    if (typeof bm.lb === 'number') { vsLives.bottom = bm.lb; vsLives.top = bm.lt; }
   }
 };
 
@@ -1354,9 +1409,10 @@ const GUEST_EV = {
   explode: (m) => { audio.sfx('explode'); fx.explosion(m.x, m.y); fx.shake(0.5); },
   lifeLost: (m) => {
     audio.sfx('lifeLost'); fx.shake(0.8); vignetteT = 0.6;
-    // versus: mirror the per-side decrement instantly (snapshots confirm it)
-    if (gameMode === 'versus' && (m.side === 'bottom' || m.side === 'top')
-        && vsLives[m.side] > 0) vsLives[m.side]--;
+    // versus AND co-op MP: mirror the per-side decrement instantly (state
+    // snapshots confirm it). Guest is always MP, so coop here = co-op MP.
+    if ((gameMode === 'versus' || gameMode === 'coop')
+        && (m.side === 'bottom' || m.side === 'top') && vsLives[m.side] > 0) vsLives[m.side]--;
   },
   powerup: (m) => {
     const info = POWERUP_INFO[m.extra];
@@ -1490,6 +1546,9 @@ const onNetMessage = (msg) => {
         if (typeof msg.sb === 'number') { vsScores.bottom = msg.sb; vsScores.top = msg.st; }
         // no fx.clear(): the arena-clear confetti keeps playing, like the host
       } else {
+        // co-op MP: the level message carries the current per-side hearts
+        // (fresh game, nextLevel with healing, or reconnect resync)
+        if (typeof msg.lb === 'number') { vsLives.bottom = msg.lb; vsLives.top = msg.lt; }
         fx.clear();
       }
       // resync diff (host re-sent state after a reconnect): apply silently
@@ -1562,6 +1621,13 @@ const render = () => {
   ctx.rect(0, 0, FIELD_W, FIELD_H);
   ctx.clip();
 
+  // The guest is the top player; flip the PLAYFIELD vertically so their paddle
+  // sits at the bottom of their screen — the natural, stable Breakout view.
+  // HUD/countdown/overlay text is drawn AFTER the flip is undone so it stays
+  // readable. Physics/authority are unchanged: this is purely cosmetic.
+  const flip = mode === 'guest';
+  ctx.save();
+  if (flip) { ctx.translate(0, FIELD_H); ctx.scale(1, -1); }
   drawBackground();
   drawBricks();
   drawPowerups();
@@ -1569,6 +1635,8 @@ const render = () => {
   drawBalls();
   if (paddles) { drawPaddle('bottom'); drawPaddle('top'); }
   fx.draw(ctx);
+  ctx.restore();
+
   drawHud();
   drawOverlays();
 
@@ -1722,6 +1790,12 @@ const drawLasers = () => {
 
 // versus HUD: orange side bottom-left, blue side top-right, map name top-center,
 // small ramp indicator bottom-center. Co-op HUD below stays untouched.
+const colorOfSide = (side) => (side === 'bottom' ? ORANGE : BLUE);
+// Self is drawn at the screen-bottom, opponent at the top — matching the flipped
+// playfield so each player's own hearts sit near their own (bottom) paddle.
+const selfSide = () => (mode === 'guest' ? 'top' : 'bottom');
+const oppSide = () => (mode === 'guest' ? 'bottom' : 'top');
+
 const drawVersusHud = () => {
   ctx.save();
   ctx.textBaseline = 'middle';
@@ -1730,26 +1804,27 @@ const drawVersusHud = () => {
   ctx.font = '15px system-ui, sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.45)';
   ctx.fillText(`${levelIdx + 1} · ${levelName}`, FIELD_W / 2, 24);
-  // bottom side (orange): hearts + score, bottom-left
+  const me = selfSide(), them = oppSide();
+  // self: hearts + score, bottom-left
   ctx.textAlign = 'left';
   ctx.font = '20px system-ui, sans-serif';
-  ctx.fillStyle = ORANGE;
-  const hb = '♥'.repeat(Math.max(0, vsLives.bottom));
+  ctx.fillStyle = colorOfSide(me);
+  const hb = '♥'.repeat(Math.max(0, vsLives[me]));
   ctx.fillText(hb, 16, FIELD_H - 24);
   const hbW = ctx.measureText(hb).width;
   ctx.font = 'bold 24px system-ui, sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.fillText(String(vsScores.bottom), 16 + hbW + 14, FIELD_H - 24);
-  // top side (blue): hearts + score, top-right
+  ctx.fillText(String(vsScores[me]), 16 + hbW + 14, FIELD_H - 24);
+  // opponent: hearts + score, top-right
   ctx.textAlign = 'right';
   ctx.font = '20px system-ui, sans-serif';
-  ctx.fillStyle = BLUE;
-  const ht = '♥'.repeat(Math.max(0, vsLives.top));
+  ctx.fillStyle = colorOfSide(them);
+  const ht = '♥'.repeat(Math.max(0, vsLives[them]));
   ctx.fillText(ht, FIELD_W - 16, 24);
   const htW = ctx.measureText(ht).width;
   ctx.font = 'bold 24px system-ui, sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.fillText(String(vsScores.top), FIELD_W - 16 - htW - 14, 24);
+  ctx.fillText(String(vsScores[them]), FIELD_W - 16 - htW - 14, 24);
   // ramp indicator, bottom center, subtle
   ctx.textAlign = 'center';
   ctx.font = 'bold 13px system-ui, sans-serif';
@@ -1758,8 +1833,60 @@ const drawVersusHud = () => {
   ctx.restore();
 };
 
+// Co-op MP HUD: shared score/combo/level name, but per-player hearts —
+// orange (bottom player) bottom-left, blue (top player) top-right.
+const drawCoopHud = () => {
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  // shared score + combo, top-left
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 28px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillText(String(score), 16, 24);
+  if (combo > 1) {
+    const pulse = combo > 2 ? 1 + 0.15 * Math.sin(clock * 10) : 1;
+    ctx.save();
+    ctx.translate(30 + ctx.measureText(String(score)).width + 26, 24);
+    ctx.scale(pulse, pulse);
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.fillStyle = ORANGE;
+    ctx.textAlign = 'left';
+    ctx.fillText(`x${combo}`, 0, 0);
+    ctx.restore();
+  }
+  // level name, top-center
+  ctx.textAlign = 'center';
+  ctx.font = '15px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText(`${levelIdx + 1} · ${levelName}`, FIELD_W / 2, 24);
+  // opponent hearts top-right, self hearts bottom-left (matches the flipped view)
+  const me = selfSide(), them = oppSide();
+  ctx.textAlign = 'right';
+  ctx.font = '20px system-ui, sans-serif';
+  ctx.fillStyle = colorOfSide(them);
+  ctx.fillText('♥'.repeat(Math.max(0, vsLives[them])), FIELD_W - 16, 24);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = colorOfSide(me);
+  ctx.fillText('♥'.repeat(Math.max(0, vsLives[me])), 16, FIELD_H - 22);
+  // active effect timers, bottom-right (kept clear of the bottom-left hearts)
+  const chips = [];
+  if (timers.expand > 0) chips.push(`E ${Math.ceil(timers.expand)}`);
+  if (timers.slow > 0) chips.push(`S ${Math.ceil(timers.slow)}`);
+  if (timers.laser > 0) chips.push(`L ${Math.ceil(timers.laser)}`);
+  if (timers.fire > 0) chips.push(`F ${Math.ceil(timers.fire)}`);
+  if (timers.stickyCharges > 0) chips.push(`C ×${timers.stickyCharges}`);
+  if (chips.length) {
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillText(chips.join('   '), FIELD_W - 16, FIELD_H - 14);
+  }
+  ctx.restore();
+};
+
 const drawHud = () => {
   if (gameMode === 'versus') { drawVersusHud(); return; }
+  if (coopMp()) { drawCoopHud(); return; }
   ctx.save();
   ctx.textBaseline = 'middle';
   // score
