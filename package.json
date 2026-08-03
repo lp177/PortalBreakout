@@ -1,0 +1,29 @@
+{
+  "name": "portalbreakout",
+  "version": "1.0.0",
+  "description": "Breakout where your paddles are portals",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lp177/PortalBreakout.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/lp177/PortalBreakout/issues"
+  },
+  "homepage": "https://github.com/lp177/PortalBreakout#readme",
+  "devDependencies": {
+    "vite": "^8.2.0"
+  },
+  "private": true
+}
