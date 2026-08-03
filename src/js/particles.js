@@ -112,6 +112,15 @@ const fillQuad = (ctx, x, y, hw, hh, rot, color, alpha) => {
 const drawTexts = (ctx) => {
   if (textCount === 0) return;
   ctx.save();
+  // The engine may draw us inside a vertically-flipped world transform (the
+  // multiplayer guest's playfield is mirrored so their own paddle sits at the
+  // bottom of their screen). Plain fillText would then render every glyph
+  // upside-down, so detect the flip from the live matrix and counter it locally
+  // per text — the popup stays upright and rising on screen in both views. Field
+  // position is unchanged; this is purely cosmetic. (getTransform is Baseline
+  // widely-available; fall back to the un-countered path if it is ever absent.)
+  const m = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+  const flipped = m ? m.d < 0 : false;
   ctx.font = TEXT_FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -122,22 +131,18 @@ const drawTexts = (ctx) => {
     const t = texts[i];
     const f = t.life / t.ttl;
     const prog = 1 - f;
-    const y = t.y - 54 * easeOutCubic(prog);
+    const rise = 54 * easeOutCubic(prog);
+    const y = flipped ? t.y + rise : t.y - rise;   // rise upward on screen either way
     const pop = prog < 0.15 ? 0.55 + 0.45 * (prog / 0.15) : 1;
     ctx.globalAlpha = f < 0.35 ? f / 0.35 : 1;
-    if (pop !== 1) {
-      ctx.save();
-      ctx.translate(t.x, y);
-      ctx.scale(pop, pop);
-      ctx.strokeText(t.text, 0, 0);
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, 0, 0);
-      ctx.restore();
-    } else {
-      ctx.strokeText(t.text, t.x, y);
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, t.x, y);
-    }
+    ctx.save();
+    ctx.translate(t.x, y);
+    if (flipped) ctx.scale(1, -1);   // undo the world flip so glyphs read upright
+    if (pop !== 1) ctx.scale(pop, pop);
+    ctx.strokeText(t.text, 0, 0);
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, 0, 0);
+    ctx.restore();
   }
   ctx.restore();
 };

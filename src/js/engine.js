@@ -1337,15 +1337,46 @@ const renderGuestState = (dt) => {
   const oneWaySec = net.oneWay / 1000;
   const alpha = 1 - Math.exp(-dt / NET_SMOOTH_TAU);
 
-  // balls: dead-reckoning
+  // balls: dead-reckoning. Cap the TOTAL lead (age + one-way) at NET_EXTRAP_MAX_MS
+  // — capping only the age component let one-way stack on top, exceeding the
+  // documented bound (up to ~700ms) on a delayed/dropped state packet.
   const ageSec = clamp((nowMs - snapCur.t) / 1000, 0, NET_EXTRAP_MAX_MS / 1000);
-  const lead = ageSec + oneWaySec;
+  const lead = Math.min(ageSec + oneWaySec, NET_EXTRAP_MAX_MS / 1000);
   const snapBalls = bm.balls;
-  if (renderPos.length !== snapBalls.length) renderPos.length = snapBalls.length; // ball set changed → reindex
+  // The wire carries no ball id, so when the ball SET changes (multiball split,
+  // or a lost ball the host spliced — which re-indexes every higher-index ball)
+  // a bare index map would hand each survivor its neighbour's smoothed position
+  // and hard-snap the whole set across the field. Re-key renderPos by nearest
+  // previous position: survivors keep their own anchor, genuinely new/teleported
+  // balls stay unmatched and fall through to the snap branch below.
+  if (renderPos.length !== snapBalls.length) {
+    const old = renderPos;
+    const used = new Array(old.length).fill(false);
+    const next = new Array(snapBalls.length);
+    for (let i = 0; i < snapBalls.length; i++) {
+      const bx = snapBalls[i][0], by = snapBalls[i][1];
+      let best = -1, bestD = NET_SNAP_DIST;      // only carry anchors within snap range
+      for (let j = 0; j < old.length; j++) {
+        if (used[j] || !old[j]) continue;
+        const d = Math.hypot(bx - old[j].x, by - old[j].y);
+        if (d < bestD) { bestD = d; best = j; }
+      }
+      if (best >= 0) { next[i] = old[best]; used[best] = true; }
+    }
+    renderPos = next;
+  }
   balls = snapBalls.map((bb, i) => {
     const bvx = bb[2] ?? 0, bvy = bb[3] ?? 0;
     const tx = clamp(bb[0] + bvx * lead, BALL_R, FIELD_W - BALL_R);
-    const ty = clamp(bb[1] + bvy * lead, BALL_R, FIELD_H - BALL_R);
+    let ty = clamp(bb[1] + bvy * lead, BALL_R, FIELD_H - BALL_R);
+    // Don't dead-reckon a ball *past* the paddle plane it is approaching: at the
+    // plane it either teleports (a full-field discontinuity the guest cannot
+    // predict) or is lost, so extrapolating on to the field edge just overshoots
+    // the catch zone and then hard-snaps. Freeze the forward lead at the plane;
+    // the authoritative post-event snapshot resolves it. (No effect on straight
+    // mid-field runs, where the ball never reaches a plane within one lead.)
+    if (bvy > 0) ty = Math.min(ty, BOTTOM_PLANE);
+    else if (bvy < 0) ty = Math.max(ty, TOP_PLANE);
     let rp = renderPos[i];
     if (!rp || Math.hypot(tx - rp.x, ty - rp.y) > NET_SNAP_DIST) {
       rp = { x: tx, y: ty };            // new ball, or a bounce/portal the guest couldn't predict → snap
