@@ -290,3 +290,59 @@ ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch })
 ### DOM additions (`index.html` — already updated; do not rename ids)
 
 Menu button `#btn-versus` opens `#dlg-versus`: a "vs Computer" section (difficulty `<select id="vs-difficulty">` easy/normal/hard + `#btn-vs-ai` start) and a "vs Friend" section (`#btn-vs-friend`: when MP-connected as host it starts the online match, otherwise it opens `#dlg-multiplayer` to connect first; ui.js relabels it accordingly, id stays).
+
+## Multiplayer v1.2 — latency reduction + lobby
+
+Targets a high-latency intercontinental link (~250–300 ms RTT, often TURN-TCP relayed). Every change below is transport-agnostic (helps over a reliable ordered TCP relay too — do NOT rely on unreliable DataChannels). Host stays authoritative; co-op and versus both benefit.
+
+### RTT measurement (`js/net.js`)
+
+- Heartbeat becomes a ping/echo: sender emits `{t:'hb', ts}` (ts = `performance.now()`), receiver immediately replies `{t:'hback', ts}` (echoing the received ts). On `hback`, sender computes `rtt = performance.now() - ts` and folds it into an EWMA. `hb` interval 0.5 s (liveness thresholds unchanged: `lost` at 3 s, give-up 30 s). Both `hb` and `hback` are handled inside net.js and NEVER forwarded as `data`; both refresh `lastReceived`.
+- New API: `net.rtt` (getter → smoothed RTT ms, 0 if unknown), `net.oneWay` (getter → `clamp(rtt/2, 0, NET_LAGCOMP_MAX_MS)` ms). Reset on every new session.
+
+### Ball dead-reckoning (`js/engine.js`, guest render)
+
+- State snapshot balls now carry velocity: `balls: [[x, y, vx, vy], …]` (vx/vy rounded px/s). Everything else in the `state` message is unchanged (`pb`, `pt`, `lasers`, `pups`, `score`, `lives`, `combo`, versus `lb/lt/sb/st/ramp/sv`).
+- Guest stops pure interpolation. For each ball it keeps a smoothed `renderPos`. Each frame: `target = snapPos + vel * (ageSec + oneWaySec)` (ageSec = time since the snapshot was received; oneWaySec = `net.oneWay/1000`), clamped to the field; `ageSec` capped so total lead ≤ `NET_EXTRAP_MAX_MS`. Move `renderPos` toward `target` with exponential smoothing (time constant `NET_SMOOTH_TAU`); if `|target − renderPos| > NET_SNAP_DIST` (a bounce/teleport the guest couldn't predict) snap directly. vx/vy give the correct orange=falling / blue=rising colour cue. New/removed balls (multiball, loss) reset cleanly by index.
+- Opponent paddle (bottom / host) on the guest: extrapolate from the last two snapshots' `pb` delta by `oneWay`, lightly smoothed (same τ). The guest's own (top) paddle stays fully local/predicted (zero latency) — unchanged.
+
+### Host-side lag compensation for the guest paddle (`js/engine.js`, host)
+
+- Host tracks the guest paddle velocity from successive `input` messages (Δx / Δt using `performance.now()` on receipt). When resolving the **top** paddle's portal/miss AND when rendering it, the host uses `guestPadX + guestPadVel * oneWay` (clamped to walls) so the host's notion of the guest paddle matches where the guest actually has it *now*. Applied only when `0 < oneWay ≤ NET_LAGCOMP_MAX_MS`.
+- Extra top-paddle catch tolerance: widen the top paddle's effective catch half-width by `min(|guestPadVel| * oneWaySec, NET_CATCH_TOL_MAX)` px, so a guest mid-correction isn't unfairly missed. Never applied to the bottom (host-local) paddle. Purely reduces false misses; never lets the guest catch a ball its paddle can't plausibly reach.
+
+### Send rates (`js/engine.js`)
+
+- State broadcast: `NET_STATE_HZ` (30/s). Guest input: `NET_INPUT_HZ` (40/s), plus an immediate send on any `fire`/`launch` edge so serves/laser feel responsive.
+
+### Versus ball acceleration
+
+- `VS_RAMP_RATE` raised (0.008 → 0.011) so the anti-stalemate speed-up ramps a bit sooner. Caps (`VS_RAMP_MAX`, `VS_BALL_SPEED_MAX`) unchanged.
+
+### Constants (added/changed in `js/constants.js` — already edited)
+
+```js
+export const NET_STATE_HZ = 30, NET_INPUT_HZ = 40;
+export const NET_EXTRAP_MAX_MS = 300;    // cap dead-reckoning lead
+export const NET_SMOOTH_TAU = 0.06;      // guest position smoothing time constant (s)
+export const NET_SNAP_DIST = 120;        // px error above which to snap instead of smooth
+export const NET_LAGCOMP_MAX_MS = 400;   // ignore extrapolation beyond this (bad RTT)
+export const NET_CATCH_TOL_MAX = 24;     // px extra top-paddle catch tolerance for the remote paddle
+// VS_RAMP_RATE changed 0.008 → 0.011
+```
+
+## Multiplayer lobby (v1.2) — intuitive party flow
+
+Replaces the "friend joins → dialog closes → host uses the normal Play/Levels buttons" flow (which felt like a cancelled action) with an explicit lobby. New dialog `#dlg-lobby` (already in `index.html`, `closedby="none"`), driving both co-op and versus setup.
+
+Flow:
+1. Menu → "Play with a friend" opens `#dlg-multiplayer` (unchanged: Create room / Join with code). Menu → "Versus" → "vs Friend" routes into the same connect step, defaulting the lobby mode to versus.
+2. **Host** clicks Create room → `#dlg-multiplayer` closes, `#dlg-lobby` opens in host view: invite code + **always-visible** "Copy invite link" (`#lobby-room-code`, `#btn-lobby-copy`), a **Mode** select (`#lobby-mode`: co-op / versus), a **Map** select (`#lobby-map`, filled from `LEVELS`), a **Start** button (`#btn-lobby-start`, disabled until a friend joins), a **Remove friend** button (`#btn-lobby-kick`, hidden until joined), and **Leave** (`#btn-lobby-leave`). Guest slot (`#lobby-guest-slot`) shows "Waiting for a friend…".
+3. **Guest** joins (code or `?join=` link) → on `open`, `#dlg-multiplayer` closes and `#dlg-lobby` opens in guest view (`#lobby-guest` shown, host controls `#lobby-host` hidden): "Waiting for the host to choose the map…".
+4. Host `peer-joined` → guest slot shows "Friend connected", Start enabled, Kick shown; host sends `{t:'lobby'}` so the guest is definitively in the lobby view. (Optionally `{t:'lobby', mode, map}` to preview the host's current pick — guest may show "Host is setting up: Versus · <map name>".)
+5. Host picks Mode + Map, clicks **Start** → co-op: `startGame(mapIdx)` → `engine.startHost(mapIdx)`; versus: `startVersus({type:'mp', levelIdx: mapIdx})` → `engine.startVersusHost(mapIdx)`. Either sends `{t:'level', mode, …}`; both sides close the lobby (guest on `onLevelStart`/first `level` message, host on Start) and enter the game.
+6. **Kick**: host → `net.send({t:'kick'})` then `leaveGame()`-style teardown of the session; guest on `{t:'kick'}` → close lobby, return to menu, toast "The host removed you from the room." **Leave**: host or guest → close lobby + `net.close()` (the peer sees the normal `closed`/`lost` path → menu).
+
+Wire additions: host→guest `{t:'lobby', mode?, map?}` (enter/refresh lobby) and `{t:'kick'}`. Both are lobby-control messages handled in `main.js`'s net `data` branch (peeked before `engine.onNetMessage`, which ignores unknown `t`).
+
+New/changed `ui.js` API: `ui.showLobby({role, code, connected})`, `ui.updateLobby({connected, guestName?})`, `ui.hideLobby()`; new `onAction` names: `'lobby-start' {mode, levelIdx}`, `'lobby-kick'`, `'lobby-leave'`. `#dlg-multiplayer`'s old inline room-box/copy may remain but the lobby is the canonical share surface. Rematch still reuses the existing path (host relays via the start messages); the lobby is only for initial setup.

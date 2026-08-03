@@ -7,6 +7,8 @@ import {
   MIN_VY_RATIO, POWERUP_SPEED, POWERUP_R, POWERUP_DROP_CHANCE,
   LIVES_START, MAX_BALLS,
   VS_LIVES, VS_LIFE_MAX, VS_RAMP_RATE, VS_RAMP_MAX, VS_BALL_SPEED_MAX, AI_PROFILES,
+  NET_STATE_HZ, NET_INPUT_HZ, NET_EXTRAP_MAX_MS, NET_SMOOTH_TAU, NET_SNAP_DIST,
+  NET_LAGCOMP_MAX_MS, NET_CATCH_TOL_MAX,
 } from './constants.js';
 import { BRICK_TYPES, LEVELS } from './levels.js';
 import { audio } from './audio.js';
@@ -62,6 +64,10 @@ let snapPrev = null, snapCur = null;   // guest snapshot pair {msg, t}
 let guestPadX = FIELD_W / 2;           // guest's locally-predicted top paddle
 let remotePaused = false;
 let pendingLaunch = false;             // guest: latched launch edge until next input send
+let guestPadVel = 0;                   // host: guest paddle velocity (px/s) from input deltas (lag-comp)
+let lastGuestInputT = 0;               // host: performance.now() of the last {t:'input'} received
+let renderPos = [];                    // guest: per-ball smoothed render positions (dead-reckoning)
+let prevFire = false, prevLaunch = false; // guest: edge-detect for immediate (extra) input sends
 
 // versus mode (see CONTRACT.md "Versus mode")
 const freshVsSide = () => ({
@@ -228,7 +234,7 @@ const startLoop = () => {
 
 // ---- lifecycle ----
 const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; gameMode = 'coop'; ai = null; startLoop(); setupLevel(idx); };
-const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; startLoop(); setupLevel(idx); };
+const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; guestPadVel = 0; lastGuestInputT = 0; startLoop(); setupLevel(idx); };
 const startGuest = () => {
   mode = 'guest';
   gameMode = 'coop'; ai = null;      // versus arrives via {t:'level', mode:'versus'}
@@ -239,7 +245,8 @@ const startGuest = () => {
   timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
   snapPrev = null; snapCur = null; remotePaused = false;
   guestPadX = FIELD_W / 2;
-  pendingLaunch = false;
+  pendingLaunch = false; prevFire = false; prevLaunch = false;
+  renderPos = [];
   vsLives = { bottom: VS_LIVES, top: VS_LIVES };
   vsScores = { bottom: 0, top: 0 };
   vsSide = freshVsSide();
@@ -321,6 +328,7 @@ const startVersusHost = (levelIdx_) => {
   gameMode = 'versus';
   ai = null;
   guestInput = { x: FIELD_W / 2, fire: false, launch: false };
+  guestPadVel = 0; lastGuestInputT = 0;
   startLoop();
   setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
 };
@@ -332,7 +340,7 @@ const quit = () => {
   rafId = 0;
   phase = 'idle';
   balls = []; powerups = []; lasers = []; delayed = [];
-  snapPrev = null; snapCur = null; remotePaused = false;
+  snapPrev = null; snapCur = null; remotePaused = false; renderPos = [];
   timeScale = 1; slowmoT = 0; clearPending = false;
   gameMode = 'coop'; ai = null; vsWinner = null;
   fx.clear();
@@ -466,11 +474,12 @@ const hostFrame = (dt, inp) => {
 
   if (mode === 'host' && net.connected) {
     sendAcc += dt;
-    if (sendAcc >= 0.04) {
+    if (sendAcc >= 1 / NET_STATE_HZ) {
       sendAcc = 0;
       const msg = {
         t: 'state',
-        balls: balls.map((b) => [Math.round(b.x), Math.round(b.y)]),
+        // balls carry velocity so the guest can dead-reckon between snapshots
+        balls: balls.map((b) => [Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy)]),
         pb: Math.round(paddles.bottom.x), pt: Math.round(paddles.top.x),
         lasers: lasers.map((l) => [Math.round(l.x), Math.round(l.y), l.dir]),
         pups: powerups.map((p) => [Math.round(p.x), Math.round(p.y), p.kind]),
@@ -514,6 +523,25 @@ const movePaddle = (p, move, targetX, dt) => {
   p.x = clamp(p.x, p.w / 2, FIELD_W - p.w / 2);
 };
 
+// Host lag-comp for the remote (top) paddle: where the guest really has it
+// *now* — its last reported x advanced by the estimated one-way latency, using
+// the velocity derived from successive input packets. `tol` is the extra catch
+// half-width that keeps a guest mid-correction from being unfairly missed.
+// Falls back to the raw reported x (no extrapolation, no tolerance) when RTT is
+// unknown or implausibly large. Never used for the bottom (host-local) paddle.
+const guestLagComp = () => {
+  const halfW = paddles.top.w / 2;
+  const oneWay = net.oneWay;
+  if (oneWay > 0 && oneWay <= NET_LAGCOMP_MAX_MS) {
+    const s = oneWay / 1000;
+    return {
+      x: clamp(guestInput.x + guestPadVel * s, halfW, FIELD_W - halfW),
+      tol: Math.min(Math.abs(guestPadVel) * s, NET_CATCH_TOL_MAX),
+    };
+  }
+  return { x: clamp(guestInput.x, halfW, FIELD_W - halfW), tol: 0 };
+};
+
 const movePaddles = (dt, inp) => {
   // paddle width tween (expand powerup; versus scopes it to the catching side)
   for (const side of ['bottom', 'top']) {
@@ -536,7 +564,9 @@ const movePaddles = (dt, inp) => {
   if (mode === 'host' && net.connected) {
     const p = paddles.top;
     const maxStep = PADDLE_SPEED * 3 * dt;
-    p.x += clamp(clamp(guestInput.x, p.w / 2, FIELD_W - p.w / 2) - p.x, -maxStep, maxStep);
+    // follow the lag-compensated guest position so the drawn paddle sits where
+    // the guest actually has it now (the same effX the portal test uses)
+    p.x += clamp(guestLagComp().x - p.x, -maxStep, maxStep);
   } else if (gameMode === 'versus' && ai) {
     // AI: same movement clamp as a player, max speed from its profile
     const p = paddles.top;
@@ -736,13 +766,17 @@ const moveBalls = (dt) => {
     // portal crossings (surface plane, moving into the paddle, within its width)
     if (b.portalCd <= 0) {
       const pb = paddles.bottom, pt = paddles.top;
+      // host lag-comp: test the TOP paddle at the guest's extrapolated position
+      // with a little extra catch tolerance; the bottom (host-local) is exact
+      let topCx = pt.x, topTol = 0;
+      if (mode === 'host' && net.connected) { const lc = guestLagComp(); topCx = lc.x; topTol = lc.tol; }
       if (b.vy > 0 && b.prevY + BALL_R < BOTTOM_PLANE && b.y + BALL_R >= BOTTOM_PLANE
           && Math.abs(b.x - pb.x) <= pb.w / 2 + BALL_R) {
         teleport(b, 'bottom');
         continue;
       }
       if (b.vy < 0 && b.prevY - BALL_R > TOP_PLANE && b.y - BALL_R <= TOP_PLANE
-          && Math.abs(b.x - pt.x) <= pt.w / 2 + BALL_R) {
+          && Math.abs(b.x - topCx) <= pt.w / 2 + BALL_R + topTol) {
         teleport(b, 'top');
         continue;
       }
@@ -1210,41 +1244,83 @@ const guestFrame = (dt, inp) => {
   }
 
   // latch launch presses until the next input packet (versus: guest serves)
-  pendingLaunch = pendingLaunch || Boolean(inp.launch);
+  const fireNow = Boolean(inp.top.fire || inp.bottom.fire);
+  const launchNow = Boolean(inp.launch);
+  pendingLaunch = pendingLaunch || launchNow;
+  // a fresh fire/launch press sends one extra packet immediately so serves and
+  // lasers stay responsive instead of waiting up to a full input period
+  const edge = (fireNow && !prevFire) || (launchNow && !prevLaunch);
+  prevFire = fireNow; prevLaunch = launchNow;
 
   sendAcc += dt;
-  if (sendAcc >= 1 / 30 && net.connected) {
-    sendAcc = 0;
-    net.send({
-      t: 'input', x: Math.round(guestPadX),
-      fire: Boolean(inp.top.fire || inp.bottom.fire),
-      launch: pendingLaunch,
-    });
-    pendingLaunch = false;
+  if (net.connected) {
+    const periodic = sendAcc >= 1 / NET_INPUT_HZ;
+    if (periodic || edge) {
+      net.send({
+        t: 'input', x: Math.round(guestPadX),
+        fire: fireNow, launch: pendingLaunch,
+      });
+      pendingLaunch = false;
+      if (periodic) sendAcc = 0; // edge packets are extra — keep the periodic cadence
+    }
   }
 
-  interpolateSnapshots();
+  renderGuestState(dt);
 };
 
-const interpolateSnapshots = () => {
+// Guest render (dead-reckoning). Each ball is projected from the latest snapshot
+// by its own velocity over (age-since-received + estimated one-way latency),
+// clamped so the total lead never exceeds NET_EXTRAP_MAX_MS, then the persistent
+// per-ball renderPos is eased toward that target (time-constant NET_SMOOTH_TAU);
+// a jump beyond NET_SNAP_DIST (an unpredicted bounce/portal) snaps instead. The
+// host (bottom) paddle is extrapolated from the last two snapshots' pb, lightly
+// smoothed; the guest's own (top) paddle stays fully local (set above). Lasers
+// and powerups keep a light back-in-time interpolation. New/removed balls reset
+// cleanly by index. Authoritative scalars come straight from the latest snapshot.
+const renderGuestState = (dt) => {
   if (!snapCur) return;
-  const now = performance.now() - 40; // interp delay
-  let a = snapPrev, bSnap = snapCur, alpha = 1;
-  if (a && bSnap.t > a.t) alpha = clamp((now - a.t) / (bSnap.t - a.t), 0, 1);
-  else a = bSnap;
-  const lerp = (u, v) => u + (v - u) * alpha;
+  const bm = snapCur.msg;
+  const nowMs = performance.now();
+  const oneWaySec = net.oneWay / 1000;
+  const alpha = 1 - Math.exp(-dt / NET_SMOOTH_TAU);
 
-  const am = a.msg, bm = bSnap.msg;
-  balls = bm.balls.map((bb, i) => {
-    const ab = am.balls[i] ?? bb;
-    // vy sign derived from the snapshot delta so the orange=falling / blue=rising
-    // color cue works on the guest too (magnitude is irrelevant to rendering)
-    return {
-      x: lerp(ab[0], bb[0]), y: lerp(ab[1], bb[1]), vy: bb[1] - ab[1],
-      stuck: false, fire: timers.fire > 0,
-    };
+  // balls: dead-reckoning
+  const ageSec = clamp((nowMs - snapCur.t) / 1000, 0, NET_EXTRAP_MAX_MS / 1000);
+  const lead = ageSec + oneWaySec;
+  const snapBalls = bm.balls;
+  if (renderPos.length !== snapBalls.length) renderPos.length = snapBalls.length; // ball set changed → reindex
+  balls = snapBalls.map((bb, i) => {
+    const bvx = bb[2] ?? 0, bvy = bb[3] ?? 0;
+    const tx = clamp(bb[0] + bvx * lead, BALL_R, FIELD_W - BALL_R);
+    const ty = clamp(bb[1] + bvy * lead, BALL_R, FIELD_H - BALL_R);
+    let rp = renderPos[i];
+    if (!rp || Math.hypot(tx - rp.x, ty - rp.y) > NET_SNAP_DIST) {
+      rp = { x: tx, y: ty };            // new ball, or a bounce/portal the guest couldn't predict → snap
+    } else {
+      rp.x += (tx - rp.x) * alpha;
+      rp.y += (ty - rp.y) * alpha;
+    }
+    renderPos[i] = rp;
+    // vx/vy carry the orange=falling / blue=rising color cue (+ the fire flag)
+    return { x: rp.x, y: rp.y, vx: bvx, vy: bvy, stuck: false, fire: timers.fire > 0 };
   });
-  paddles.bottom.x = lerp(am.pb, bm.pb);
+
+  // opponent (bottom / host) paddle: extrapolate from the last two snapshots' pb
+  let pbTarget = bm.pb;
+  if (snapPrev && snapCur.t > snapPrev.t) {
+    const vel = (bm.pb - snapPrev.msg.pb) / ((snapCur.t - snapPrev.t) / 1000);
+    pbTarget = bm.pb + vel * oneWaySec;
+  }
+  pbTarget = clamp(pbTarget, paddles.bottom.w / 2, FIELD_W - paddles.bottom.w / 2);
+  paddles.bottom.x += (pbTarget - paddles.bottom.x) * alpha;
+
+  // lasers / powerups: light back-in-time interpolation between the snapshot pair
+  let a = snapPrev, bSnap = snapCur, ia = 1;
+  const interpNow = nowMs - 40;
+  if (a && bSnap.t > a.t) ia = clamp((interpNow - a.t) / (bSnap.t - a.t), 0, 1);
+  else a = bSnap;
+  const lerp = (u, v) => u + (v - u) * ia;
+  const am = a.msg;
   lasers = bm.lasers.map((ll, i) => {
     const al = am.lasers[i] ?? ll;
     return { x: lerp(al[0], ll[0]), y: lerp(al[1], ll[1]), dir: ll[2] };
@@ -1253,6 +1329,8 @@ const interpolateSnapshots = () => {
     const ap = am.pups[i] ?? pp;
     return { x: lerp(ap[0], pp[0]), y: lerp(ap[1], pp[1]), kind: pp[2] };
   });
+
+  // authoritative HUD scalars
   score = bm.score; lives = bm.lives; combo = bm.combo;
   if (gameMode === 'versus') {
     if (typeof bm.lb === 'number') { vsLives.bottom = bm.lb; vsLives.top = bm.lt; }
@@ -1360,7 +1438,17 @@ const onNetMessage = (msg) => {
   if (!msg || typeof msg !== 'object' || msg.t === 'hb') return;
   if (mode !== 'guest') {
     if (msg.t === 'input') {
-      guestInput.x = clamp(Number(msg.x) || 0, 0, FIELD_W);
+      const nx = clamp(Number(msg.x) || 0, 0, FIELD_W);
+      // guest paddle velocity from successive packets → host lag-comp for the
+      // top paddle. dt guarded > 0; clamp to a sane max so a stale/huge gap
+      // (e.g. first packet after a reconnect) can't fling the paddle.
+      const nowT = performance.now();
+      if (lastGuestInputT > 0) {
+        const dtS = (nowT - lastGuestInputT) / 1000;
+        if (dtS > 0) guestPadVel = clamp((nx - guestInput.x) / dtS, -PADDLE_SPEED * 3, PADDLE_SPEED * 3);
+      }
+      lastGuestInputT = nowT;
+      guestInput.x = nx;
       guestInput.fire = Boolean(msg.fire);
       // versus: latch the guest's serve request until hostFrame consumes it
       if (gameMode === 'versus' && msg.launch) guestInput.launch = true;
@@ -1800,5 +1888,15 @@ export const engine = {
   nextLevel,
   retryLevel,
   applySettings,
+  // read-only diagnostic snapshot of internal render state (test/debug only;
+  // not part of the module contract). Lets harnesses compare the guest's
+  // dead-reckoned ball against the host's authoritative ball.
+  __debug: () => ({
+    phase, mode, gameMode,
+    balls: balls.map((b) => ({ x: b.x, y: b.y, vx: b.vx, vy: b.vy })),
+    pb: paddles?.bottom?.x ?? null, pt: paddles?.top?.x ?? null,
+    lives, score, combo,
+    vsLives: { ...vsLives }, vsScores: { ...vsScores }, vsRamp,
+  }),
 };
 

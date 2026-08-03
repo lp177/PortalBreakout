@@ -14,7 +14,9 @@ let currentMusic = null;
 let lastRole = null;     // 'host' | 'guest' | null — survives net teardown
 let netLost = false;
 let screen = 'menu';
-let vsConfig = null;     // { type: 'ai', difficulty } | { type: 'mp' } — current versus game, for rematch
+let vsConfig = null;     // { type: 'ai', difficulty } | { type: 'mp', levelIdx } — current versus game, for rematch
+let roomCode = null;     // this host's room code — survives the connect→lobby handoff
+let pendingLobbyMode = 'coop'; // which mode the lobby opens in once a room is created (co-op vs versus entry)
 
 const setMusic = (track) => {
   currentMusic = track;
@@ -47,7 +49,7 @@ const startVersus = (config) => {
   vsConfig = config;
   showScreen('game');
   setMusic('game');      // versus keeps the normal game track
-  if (config.type === 'mp') engine.startVersusHost();
+  if (config.type === 'mp') engine.startVersusHost(config.levelIdx);  // undefined → engine picks
   else engine.startVersusAI(config.difficulty);
 };
 
@@ -59,6 +61,7 @@ const leaveGame = () => {
   lastRole = null;
   netLost = false;
   vsConfig = null;
+  roomCode = null;
   goToMenu();
   if (net.role) net.close();
 };
@@ -69,44 +72,93 @@ const netCb = (event) => {
       lastRole = net.role;
       ui.netStatus('connected');
       if (net.role === 'guest') {
-        document.getElementById('dlg-multiplayer')?.close?.();
-        showScreen('game');
-        setMusic('game');
+        // enter guest mode now (idles until the first state/level), but wait in
+        // the lobby — the host picks mode + map; the game opens on {t:'level'}
         engine.startGuest();
-        ui.toast('Connected! You control the top portal.');
+        ui.showLobby({ role: 'guest', connected: true });
+        ui.toast('Connected! Waiting for the host…');
       }
       break;
     case 'peer-joined':
       lastRole = 'host';
       ui.netStatus('connected');
-      document.getElementById('dlg-multiplayer')?.close?.();
-      ui.toast('Friend connected! Pick a level to start.');
+      ui.updateLobby({ connected: true });    // enable Start, reveal Kick, flip the guest slot
+      net.send({ t: 'lobby' });               // definitively put the guest in the lobby view
+      ui.toast('Friend connected!');
       engine.resync(); // no-op unless a hosted game is already running
       break;
-    case 'data':
-      engine.onNetMessage(event.msg);
+    case 'data': {
+      const msg = event.msg;
+      // lobby-control messages are peeked here before the engine (which ignores
+      // unknown t); everything else is forwarded to the simulation
+      if (msg && msg.t === 'lobby') {
+        if (screen !== 'game') {              // ignore a stray lobby msg once in-game
+          ui.showLobby({ role: 'guest', connected: true });
+          const mapName = (msg.map != null && LEVELS[msg.map]) ? LEVELS[msg.map].name : null;
+          if (msg.mode || mapName) {
+            const modeName = msg.mode === 'versus' ? 'Versus' : 'Co-op';
+            const el = document.getElementById('lobby-guest-msg');
+            if (el) el.textContent = mapName
+              ? `Host is setting up: ${modeName} · ${mapName}`
+              : `Host is setting up a ${modeName} game…`;
+          }
+        }
+        break;
+      }
+      if (msg && msg.t === 'kick') {
+        ui.hideLobby();
+        engine.quit?.();
+        lastRole = null;
+        netLost = false;
+        goToMenu();
+        ui.toast('The host removed you from the room.');
+        if (net.role) net.close();
+        break;
+      }
+      engine.onNetMessage(msg);
       break;
+    }
     case 'lost':
       netLost = true;
-      engine.pause('net');
+      engine.pause('net'); // no-op while waiting in the lobby (phase is idle)
       ui.netStatus('lost');
-      ui.toast(lastRole === 'host'
-        ? (vsConfig
-          ? 'Friend disconnected — Resume to play the computer, or wait.'
-          : 'Friend disconnected — Resume to continue solo, or wait.')
-        : 'Connection lost — waiting for the host…');
+      if (screen === 'game') {
+        ui.toast(lastRole === 'host'
+          ? (vsConfig
+            ? 'Friend disconnected — Resume to play the computer, or wait.'
+            : 'Friend disconnected — Resume to continue solo, or wait.')
+          : 'Connection lost — waiting for the host…');
+      } else {
+        // still in the lobby: no match to fall back to — hold and wait for the
+        // peer (the follow-up 'closed' drops us to the menu if they gave up)
+        ui.updateLobby({ connected: false });
+        ui.toast(lastRole === 'host' ? 'Your friend dropped — waiting…' : 'Lost the host — waiting…');
+      }
       break;
     case 'reconnected':
       netLost = false;
       ui.netStatus('connected');
-      engine.resume();
-      engine.resync(); // heal a guest that reloaded / missed messages while lost
+      if (screen === 'game') {
+        engine.resume();
+        engine.resync(); // heal a guest that reloaded / missed messages while lost
+      } else {
+        ui.updateLobby({ connected: true }); // re-arm the lobby after a brief drop
+      }
       ui.toast('Friend is back!');
       break;
-    case 'closed':
+    case 'closed': {
       ui.netStatus('closed');
+      // lastRole === null means WE tore the session down (leaveGame / kick / leave):
+      // both role branches are skipped and this is just a state reset
+      const inLobby = screen !== 'game';
       if (lastRole === 'host') {
-        if (screen === 'game') {
+        if (inLobby) {
+          // the guest bailed before the match started → back to a clean menu
+          ui.hideLobby();
+          engine.quit();
+          goToMenu();
+          ui.toast('Your friend left the lobby.');
+        } else {
           engine.convertToSolo(); // in versus the engine hands the top portal to the AI
           engine.resume();
           if (vsConfig) {
@@ -116,19 +168,22 @@ const netCb = (event) => {
             ui.toast('Your friend left — continuing solo.');
           }
         }
-      } else if (lastRole === 'guest' && screen === 'game') {
-        // same cleanup as onRemoteQuit: the connection-lost pause dialog and a
-        // leftover level-end/matchend dialog would otherwise sit dead over the
-        // menu, and the modal pause dialog (closedby="none") can't be Esc'd away
+      } else if (lastRole === 'guest') {
+        // same cleanup as onRemoteQuit: a leftover connection-lost pause dialog
+        // and a level-end/matchend dialog (closedby="none") would otherwise sit
+        // dead over the menu; the lobby too if the host left mid-setup
         ui.hidePause();
+        ui.hideLobby();
         document.getElementById('dlg-level-end')?.close?.();
         engine.quit();
         goToMenu();
-        ui.toast('Host left the game.');
+        ui.toast(inLobby ? 'The host closed the room.' : 'Host left the game.');
       }
       netLost = false;
       lastRole = null;
+      roomCode = null;
       break;
+    }
     case 'error':
       ui.netStatus('idle');
       ui.toast(event.message || 'Connection error.');
@@ -150,8 +205,11 @@ const onAction = (name, data = {}) => {
       net.host(netCb)
         .then((code) => {
           lastRole = 'host';
-          ui.showRoomCode(code);
+          roomCode = code;
           ui.netStatus('waiting');
+          // hand off from the connect dialog to the lobby (showLobby closes
+          // #dlg-multiplayer safely and seeds #lobby-mode from the entry point)
+          ui.showLobby({ role: 'host', code, connected: false, mode: pendingLobbyMode });
         })
         .catch((err) => {
           ui.netStatus('idle');
@@ -210,6 +268,22 @@ const onAction = (name, data = {}) => {
         engine.nextLevel();
       }
       break;
+    case 'lobby-start':
+      // the single place a friend match begins — host only (Start is hidden for the guest)
+      ui.hideLobby();
+      if (data.mode === 'versus') startVersus({ type: 'mp', levelIdx: data.levelIdx });
+      else startGame(data.levelIdx);       // startGame → engine.startHost (host role)
+      break;
+    case 'lobby-kick':
+      net.send({ t: 'kick' });             // tell the guest before we drop the channel
+      ui.hideLobby();
+      leaveGame();                         // host-side teardown: quit + goToMenu + net.close
+      ui.toast('You removed your friend.');
+      break;
+    case 'lobby-leave':
+      ui.hideLobby();
+      leaveGame();                         // the peer sees the normal closed/lost path → menu
+      break;
     case 'versus-ai':
       // a solo-vs-AI match can't coexist with a live MP session — end it first
       // (flags reset BEFORE close(): 'closed' is emitted synchronously)
@@ -223,12 +297,18 @@ const onAction = (name, data = {}) => {
       break;
     case 'versus-mp':
       if (net.role === 'host' && net.connected) {
+        // friend already present → open the versus lobby; the host still starts
+        // explicitly (Start), so a match never begins from this button
         document.getElementById('dlg-versus')?.close?.();
-        startVersus({ type: 'mp' });
+        pendingLobbyMode = 'versus';
+        ui.showLobby({ role: 'host', code: roomCode, connected: true, mode: 'versus' });
+        net.send({ t: 'lobby', mode: 'versus' });
       } else if (net.role === 'guest') {
         ui.toast('Only the host can start a versus match.');
       } else {
-        // covers both "no session" and "room created, friend not joined yet"
+        // covers both "no session" and "room created, friend not joined yet";
+        // remember the versus intent so the lobby opens in versus once connected
+        pendingLobbyMode = 'versus';
         ui.toast(net.role === 'host'
           ? 'Waiting for your friend to join…'
           : 'Connect with a friend first.');
@@ -303,8 +383,15 @@ const init = () => {
       else ui.hidePause();
     },
     onLevelStart() {
-      // guest: the host advanced/restarted — drop any leftover level-end dialog
+      // guest-only (engine fires this from its {t:'level'} handler): the host
+      // advanced/restarted, or started the very first arena from the lobby.
+      // Drop any leftover level-end dialog, and leave the lobby for the game.
       document.getElementById('dlg-level-end')?.close?.();
+      ui.hideLobby();
+      if (screen !== 'game') {
+        showScreen('game');
+        setMusic('game');
+      }
     },
     onRemoteQuit() {
       // guest: host went back to the menu — end our session too, or its zombie
@@ -321,6 +408,14 @@ const init = () => {
 
   ui.init({ onAction });
 
+  // "Play with a friend" opens the connect dialog via an HTML invoker (bypassing
+  // onAction). Default the lobby to Versus so a friend game gives each player
+  // their own 3 lives (the natural expectation); co-op (shared lives) stays one
+  // click away in the lobby's Mode select.
+  document.getElementById('btn-multiplayer')?.addEventListener('click', () => {
+    pendingLobbyMode = 'versus';
+  });
+
   // WebAudio needs a user gesture: init on the first pointer/key, then start music
   const unlock = () => {
     audio.init();
@@ -334,7 +429,7 @@ const init = () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game
   });
 
-  window.__pb = { engine, ui, net, version: '1.1.0' };
+  window.__pb = { engine, ui, net, version: '1.2.0' };
 };
 
 if (document.readyState === 'loading') {

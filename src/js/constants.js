@@ -21,7 +21,15 @@ export const ICE_ENDPOINT = 'https://lp177.fr/ice';
 
 // Versus mode (see CONTRACT.md "Versus mode")
 export const VS_LIVES = 3, VS_LIFE_MAX = 5;
-export const VS_RAMP_RATE = 0.008, VS_RAMP_MAX = 1.9, VS_BALL_SPEED_MAX = 1150;
+export const VS_RAMP_RATE = 0.011, VS_RAMP_MAX = 1.9, VS_BALL_SPEED_MAX = 1150;
+
+// Multiplayer netcode tuning (v1.2 — see CONTRACT.md "Multiplayer v1.2")
+export const NET_STATE_HZ = 30, NET_INPUT_HZ = 40;
+export const NET_EXTRAP_MAX_MS = 300;    // cap dead-reckoning lead
+export const NET_SMOOTH_TAU = 0.06;      // guest position smoothing time constant (s)
+export const NET_SNAP_DIST = 120;        // px error above which to snap instead of smooth
+export const NET_LAGCOMP_MAX_MS = 400;   // ignore extrapolation beyond this (bad RTT)
+export const NET_CATCH_TOL_MAX = 24;     // px extra top-paddle catch tolerance for the remote paddle
 export const AI_PROFILES = {   // top-paddle AI tuning
   easy:   { speed: 420, err: 60, react: 0.35 },   // px/s, aim error px, re-aim interval s
   normal: { speed: 560, err: 35, react: 0.22 },

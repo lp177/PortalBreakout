@@ -61,6 +61,11 @@ let mpConnected = false;
 let currentRoomCode = null;
 let bannerTimer = 0;
 
+// lobby dialog state (v1.2) — the lobby is the canonical share/setup surface
+let lobbyRole = null;      // 'host' | 'guest' | null
+let lobbyConnected = false;
+let lobbyGuestName = null;
+
 // #vs-friend-hint default content (spans), saved at wire time so the guest
 // override can be undone without innerHTML
 let vsFriendHintDefault = [];
@@ -331,6 +336,7 @@ const resetMpDialog = () => {
   $('mp-room-code').textContent = '';
   $('btn-mp-host').disabled = false;
   $('mp-status').textContent = '';
+  resetLobby();          // the lobby shares the session lifecycle
   updateVersusFriendBtn();
 };
 
@@ -424,6 +430,104 @@ const wireVersus = () => {
   updateVersusFriendBtn();
 };
 
+// ---------- lobby dialog (v1.2) ----------
+// build the map <select> once from LEVELS: "NN · name"
+const buildLobbyMap = () => {
+  const sel = $('lobby-map');
+  if (sel.childElementCount === LEVELS.length) return; // already populated
+  sel.textContent = '';
+  const frag = document.createDocumentFragment();
+  LEVELS.forEach((level, idx) => {
+    const opt = document.createElement('option');
+    opt.value = String(idx);
+    opt.textContent = `${String(idx + 1).padStart(2, '0')} · ${level.name}`;
+    frag.append(opt);
+  });
+  sel.append(frag);
+};
+
+const setPlayerChip = (el, main, sub, waiting) => {
+  el.textContent = '';
+  el.append(document.createTextNode(main));
+  if (sub) {
+    const s = document.createElement('small');
+    s.textContent = sub;
+    el.append(' ', s);
+  }
+  el.classList.toggle('waiting', Boolean(waiting));
+};
+
+const renderLobbyPlayers = () => {
+  const hostChip = $('lobby-players').querySelector('.is-host');
+  const guestChip = $('lobby-guest-slot');
+  if (lobbyRole === 'guest') {
+    // the local player is the joiner — blue / top portal
+    setPlayerChip(hostChip, 'Host', 'orange portal', false);
+    setPlayerChip(guestChip, 'You', 'blue portal', false);
+  } else {
+    setPlayerChip(hostChip, 'You', 'orange portal', false);
+    if (lobbyConnected) setPlayerChip(guestChip, lobbyGuestName || 'Friend connected', 'blue portal', false);
+    else setPlayerChip(guestChip, 'Waiting for a friend…', null, true);
+  }
+};
+
+const refreshLobby = () => {
+  const isHost = lobbyRole === 'host';
+  $('lobby-host').hidden = !isHost;
+  $('lobby-guest').hidden = isHost;
+  $('lobby-invite').hidden = !isHost;   // host owns the invite/share surface
+
+  const start = $('btn-lobby-start');
+  start.hidden = !isHost;                // guest never starts a match
+  start.disabled = !isHost || !lobbyConnected;
+
+  $('btn-lobby-kick').hidden = !isHost || !lobbyConnected;
+
+  renderLobbyPlayers();
+
+  const status = $('lobby-status');
+  if (isHost) {
+    status.textContent = lobbyConnected
+      ? 'Your friend is in — start when you’re ready.'
+      : 'Waiting for a friend to join…';
+  } else {
+    status.textContent = '';
+  }
+};
+
+const resetLobby = () => {
+  lobbyRole = null;
+  lobbyConnected = false;
+  lobbyGuestName = null;
+  const start = $('btn-lobby-start');
+  start.hidden = true;
+  start.disabled = true;
+  $('btn-lobby-kick').hidden = true;
+};
+
+const wireLobby = () => {
+  $('btn-lobby-start').addEventListener('click', () => {
+    emit('lobby-start', {
+      mode: $('lobby-mode').value,
+      levelIdx: Number($('lobby-map').value),
+    });
+  });
+  $('btn-lobby-kick').addEventListener('click', () => emit('lobby-kick'));
+  $('btn-lobby-leave').addEventListener('click', () => emit('lobby-leave'));
+
+  // same clipboard logic + fallback as btn-mp-copy (this is the canonical surface)
+  $('btn-lobby-copy').addEventListener('click', async () => {
+    if (!currentRoomCode) return;
+    const link = `${location.origin}${location.pathname}?join=${currentRoomCode}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      api.toast('Link copied');
+    } catch {
+      api.toast('Copy failed — select the code and copy it');
+    }
+  });
+};
+
 // ---------- pause / level-end / quit ----------
 const wireGameDialogs = () => {
   const dlgPause = $('dlg-pause');
@@ -514,7 +618,8 @@ export const ui = {
     // onAction(name, data) names: 'play' {levelIdx}, 'replay' {levelIdx},
     // 'host', 'join' {code}, 'options-changed' {settings}, 'pause', 'resume',
     // 'retry', 'next-level', 'quit-to-menu', 'cancel-mp',
-    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch'
+    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch',
+    // 'lobby-start' {mode, levelIdx}, 'lobby-kick', 'lobby-leave'
     emit = (name, data) => onAction(name, data);
     if (initialized) return;
     initialized = true;
@@ -525,6 +630,7 @@ export const ui = {
     wireOptionsForm();
     wireMultiplayer();
     wireVersus();
+    wireLobby();
     wireGameDialogs();
     syncOptionsForm();
   },
@@ -655,6 +761,43 @@ export const ui = {
     $('mp-room-code').textContent = code;
     $('mp-room-box').hidden = false;
     updateVersusFriendBtn();
+  },
+
+  // ---- lobby (v1.2) ----
+  // mode (optional) seeds #lobby-mode for the host per the start context.
+  showLobby({ role, code, connected = false, mode = 'coop' }) {
+    // moving out of the connect dialog into the lobby: clear the mp-dialog's
+    // "host is waiting to connect" flag FIRST, or closing it fires its
+    // cancel-mp handler and tears down the room we just created
+    hosting = false;
+    closeDialog($('dlg-multiplayer'));
+
+    lobbyRole = role;
+    lobbyConnected = Boolean(connected);
+    lobbyGuestName = null;
+
+    if (role === 'host') {
+      currentRoomCode = code ?? currentRoomCode;    // keep copy-link + mpRole() in sync
+      $('lobby-room-code').textContent = currentRoomCode ?? '';
+      buildLobbyMap();
+      $('lobby-mode').value = mode === 'versus' ? 'versus' : 'coop';
+    } else {
+      // guest carries no room code — mpRole() relies on that to tell host/guest apart
+      $('lobby-guest-msg').textContent = 'Waiting for the host to choose the map…';
+    }
+
+    refreshLobby();
+    openDialog($('dlg-lobby'));
+  },
+
+  updateLobby({ connected, guestName } = {}) {
+    if (typeof connected === 'boolean') lobbyConnected = connected;
+    if (guestName != null) lobbyGuestName = guestName;
+    refreshLobby();
+  },
+
+  hideLobby() {
+    closeDialog($('dlg-lobby'));
   },
 
   toast(text) {

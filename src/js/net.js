@@ -1,7 +1,7 @@
 // PortalBreakout — PeerJS multiplayer session: room codes, heartbeat, reconnect (see CONTRACT.md)
 // Uses the global `Peer` constructor from vendor/peerjs.min.js (loaded before main.js).
 
-import { ICE_ENDPOINT } from './constants.js';
+import { ICE_ENDPOINT, NET_LAGCOMP_MAX_MS } from './constants.js';
 
 const CODE_PREFIX = 'pb-';
 const PEER_PREFIX = 'portalbreakout-';   // namespaced broker id; user-facing code stays 'pb-xxxxx'
@@ -73,7 +73,7 @@ const peerOptions = () => ({
   },
 });
 
-const HB_SEND_MS = 1000;
+const HB_SEND_MS = 500;   // ping/echo cadence; liveness thresholds below are unchanged
 const WATCH_MS = 500;
 const LOST_AFTER_MS = 3000;
 const GIVE_UP_AFTER_MS = 30000;
@@ -90,6 +90,7 @@ let role = null;          // 'host' | 'guest' | null
 let status = 'idle';      // 'idle' | 'starting' | 'waiting' | 'connected' | 'lost'
 let hostPeerId = null;
 let lastReceived = 0;
+let rtt = 0;              // smoothed round-trip time (ms) from the hb/hback ping-echo; 0 = unknown
 let lostAt = 0;
 let hbTimer = 0;
 let watchTimer = 0;
@@ -151,7 +152,7 @@ const teardown = (notifyClosed) => {
   const wasActive = status !== 'idle';
   peer = null; conn = null; pendingConn = null; pendingSince = 0;
   hostPeerId = null; role = null; cb = null;
-  status = 'idle';
+  status = 'idle'; rtt = 0;   // never leak a stale RTT into the next session
   try { oldPending?.close(); } catch { /* already dead */ }
   try { oldConn?.close(); } catch { /* already dead */ }
   try { oldPeer?.destroy(); } catch { /* already dead */ }
@@ -196,7 +197,10 @@ const markLost = () => {
   if (role === 'guest') startRepair();
 };
 
-// Any incoming message (hb included) counts as liveness; only non-hb is forwarded.
+// Any incoming message (hb/hback included) counts as liveness. The heartbeat is
+// a ping/echo: on 'hb' we bounce the sender's ts straight back as 'hback'; on
+// 'hback' we fold (now - ts) into a smoothed RTT (EWMA). Neither the ping nor
+// the echo is ever forwarded to the game layer.
 const handleMessage = (raw) => {
   lastReceived = performance.now();
   if (status === 'lost') {
@@ -204,7 +208,17 @@ const handleMessage = (raw) => {
     stopRepair();
     emit({ type: 'reconnected' });
   }
-  if (raw && typeof raw === 'object' && raw.t === 'hb') return;
+  if (raw && typeof raw === 'object') {
+    if (raw.t === 'hb') {
+      if (conn?.open) { try { conn.send({ t: 'hback', ts: raw.ts }); } catch { /* channel died mid-send */ } }
+      return;
+    }
+    if (raw.t === 'hback') {
+      const sample = performance.now() - raw.ts;
+      if (Number.isFinite(sample) && sample >= 0) rtt = rtt ? rtt * 0.8 + sample * 0.2 : sample;
+      return;
+    }
+  }
   emit({ type: 'data', msg: raw });
 };
 
@@ -437,4 +451,6 @@ export const net = {
   close,
   get connected() { return status === 'connected' && conn?.open === true; },
   get role() { return role; },
+  get rtt() { return rtt; },                                            // smoothed RTT ms, 0 if unknown
+  get oneWay() { return Math.min(NET_LAGCOMP_MAX_MS, Math.max(0, rtt / 2)); }, // clamped half-RTT ms
 };

@@ -27,7 +27,7 @@
       <button id="btn-options" class="btn btn-tonal" type="button" commandfor="dlg-options" command="show-modal">Options</button>
       <button id="btn-how" class="btn btn-text" type="button" commandfor="dlg-how" command="show-modal">How to play</button>
     </nav>
-    <p class="menu-footer">v1.1 — <a href="https://github.com/lp177/PortalBreakout" rel="noopener" target="_blank">source</a></p>
+    <p class="menu-footer">v1.2 — <a href="https://github.com/lp177/PortalBreakout" rel="noopener" target="_blank">source</a></p>
   </main>
 
   <!-- ============ LEVEL SELECT ============ -->
@@ -127,6 +127,49 @@
 
   <div class="dialog-actions">
     <button id="btn-mp-cancel" class="btn btn-text" type="button" commandfor="dlg-multiplayer" command="close">Close</button>
+  </div>
+</dialog>
+
+<!-- ============ LOBBY ============ -->
+<dialog id="dlg-lobby" aria-labelledby="dlg-lobby-title" closedby="none">
+  <h2 id="dlg-lobby-title">Game lobby</h2>
+
+  <div id="lobby-players" class="lobby-players">
+    <span class="lobby-player is-host">You <small>orange portal</small></span>
+    <span class="lobby-vs" aria-hidden="true">vs</span>
+    <span class="lobby-player is-guest" id="lobby-guest-slot">Waiting for a friend…</span>
+  </div>
+
+  <div id="lobby-invite" class="lobby-invite">
+    <p class="hint">Invite a friend — share this code or link:</p>
+    <output id="lobby-room-code" class="room-code"></output>
+    <button id="btn-lobby-copy" class="btn btn-tonal" type="button">Copy invite link</button>
+  </div>
+
+  <div id="lobby-host" class="lobby-host" hidden>
+    <div class="field-row">
+      <label for="lobby-mode">Mode</label>
+      <select id="lobby-mode">
+        <option value="versus">Versus — 3 lives each, last portal standing</option>
+        <option value="coop">Co-op — 3 shared lives, clear levels together</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label for="lobby-map">Map</label>
+      <select id="lobby-map"></select>
+    </div>
+  </div>
+
+  <div id="lobby-guest" class="lobby-guest" hidden>
+    <p class="hint" id="lobby-guest-msg">Waiting for the host to choose the map…</p>
+  </div>
+
+  <p id="lobby-status" class="mp-status" role="status"></p>
+
+  <div class="dialog-actions dialog-actions-stack">
+    <button id="btn-lobby-start" class="btn btn-primary" type="button" hidden disabled>Start match</button>
+    <button id="btn-lobby-kick" class="btn btn-tonal" type="button" hidden>Remove friend</button>
+    <button id="btn-lobby-leave" class="btn btn-text" type="button">Leave</button>
   </div>
 </dialog>
 
