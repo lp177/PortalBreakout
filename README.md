@@ -10,6 +10,7 @@
 - 🧱 **50 handcrafted levels** inspired by the most famous Breakout/Arkanoid layouts, plus Portal-flavored pixel art (the cake is real here).
 - 🎮 **Solo** — control both paddles at once (fully rebindable keys, mouse, or split-screen touch), with an optional assist that mirrors the top paddle.
 - 👥 **Play with a friend** — peer-to-peer via WebRTC: host a room, share a code or link, each player takes one portal. Disconnections pause the game and let you wait or continue solo.
+- ⚔️ **Versus mode** — duel a friend online or the built-in AI (3 difficulties). One portal each, 3 lives each: miss a ball on your side, lose a life — last one standing wins. The ball speeds up over time, so no camping; bricks stay in play as the arena and cycle to the next map when cleared, and power-ups belong to whoever catches them.
 - 💥 **Game juice everywhere** — particles, screen shake, portal flashes, combos, slow-mo finishes, and seven power-ups (multiball, lasers, fireball, sticky, expand, slow, extra life).
 - 🔊 **Fully procedural audio** — every sound effect and both music loops are synthesized live with WebAudio. No assets, no downloads.
 - ♿ **Accessible** — keyboard-first menus, visible focus, `prefers-reduced-motion` support, and a reduced-effects mode.

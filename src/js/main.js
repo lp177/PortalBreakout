@@ -14,6 +14,7 @@ let currentMusic = null;
 let lastRole = null;     // 'host' | 'guest' | null — survives net teardown
 let netLost = false;
 let screen = 'menu';
+let vsConfig = null;     // { type: 'ai', difficulty } | { type: 'mp' } — current versus game, for rematch
 
 const setMusic = (track) => {
   currentMusic = track;
@@ -32,12 +33,22 @@ const goToMenu = () => {
 
 const startGame = (levelIdx) => {
   currentLevelIdx = levelIdx;
+  vsConfig = null;       // campaign game: no versus config in effect
   showScreen('game');
   setMusic('game');
   // gate on session existence (net.role), not net.connected: during a transient
   // 'lost' the session is still alive and must stay the multiplayer game
   if (net.role === 'host') engine.startHost(levelIdx);
   else engine.startSolo(levelIdx);
+};
+
+// Start (or restart, for rematch) a versus match; keeps any live net session.
+const startVersus = (config) => {
+  vsConfig = config;
+  showScreen('game');
+  setMusic('game');      // versus keeps the normal game track
+  if (config.type === 'mp') engine.startVersusHost();
+  else engine.startVersusAI(config.difficulty);
 };
 
 // End the current game AND the net session (if any). lastRole/netLost are
@@ -47,6 +58,7 @@ const leaveGame = () => {
   engine.quit();
   lastRole = null;
   netLost = false;
+  vsConfig = null;
   goToMenu();
   if (net.role) net.close();
 };
@@ -79,7 +91,9 @@ const netCb = (event) => {
       engine.pause('net');
       ui.netStatus('lost');
       ui.toast(lastRole === 'host'
-        ? 'Friend disconnected — Resume to continue solo, or wait.'
+        ? (vsConfig
+          ? 'Friend disconnected — Resume to play the computer, or wait.'
+          : 'Friend disconnected — Resume to continue solo, or wait.')
         : 'Connection lost — waiting for the host…');
       break;
     case 'reconnected':
@@ -93,11 +107,21 @@ const netCb = (event) => {
       ui.netStatus('closed');
       if (lastRole === 'host') {
         if (screen === 'game') {
-          engine.convertToSolo();
+          engine.convertToSolo(); // in versus the engine hands the top portal to the AI
           engine.resume();
-          ui.toast('Your friend left — continuing solo.');
+          if (vsConfig) {
+            vsConfig = { type: 'ai', difficulty: 'normal' }; // rematch → vs the AI
+            ui.toast('Your friend left — the computer takes over.');
+          } else {
+            ui.toast('Your friend left — continuing solo.');
+          }
         }
       } else if (lastRole === 'guest' && screen === 'game') {
+        // same cleanup as onRemoteQuit: the connection-lost pause dialog and a
+        // leftover level-end/matchend dialog would otherwise sit dead over the
+        // menu, and the modal pause dialog (closedby="none") can't be Esc'd away
+        ui.hidePause();
+        document.getElementById('dlg-level-end')?.close?.();
         engine.quit();
         goToMenu();
         ui.toast('Host left the game.');
@@ -150,10 +174,15 @@ const onAction = (name, data = {}) => {
           netLost = false;
           lastRole = null;
           net.close();
-          engine.convertToSolo();
+          engine.convertToSolo(); // in versus the engine hands the top portal to the AI
           engine.resume();
           ui.netStatus('idle');
-          ui.toast('Continuing solo.');
+          if (vsConfig) {
+            vsConfig = { type: 'ai', difficulty: 'normal' }; // rematch → vs the AI
+            ui.toast('The computer takes over.');
+          } else {
+            ui.toast('Continuing solo.');
+          }
         } else {
           ui.toast('Waiting for the host to come back…');
           ui.showPause({ reason: 'net', role: 'guest' }); // keep the lost dialog up
@@ -180,6 +209,39 @@ const onAction = (name, data = {}) => {
         currentLevelIdx++;
         engine.nextLevel();
       }
+      break;
+    case 'versus-ai':
+      // a solo-vs-AI match can't coexist with a live MP session — end it first
+      // (flags reset BEFORE close(): 'closed' is emitted synchronously)
+      if (net.role) {
+        lastRole = null;
+        netLost = false;
+        net.close();
+      }
+      document.getElementById('dlg-versus')?.close?.();
+      startVersus({ type: 'ai', difficulty: data.difficulty ?? 'normal' });
+      break;
+    case 'versus-mp':
+      if (net.role === 'host' && net.connected) {
+        document.getElementById('dlg-versus')?.close?.();
+        startVersus({ type: 'mp' });
+      } else if (net.role === 'guest') {
+        ui.toast('Only the host can start a versus match.');
+      } else {
+        // covers both "no session" and "room created, friend not joined yet"
+        ui.toast(net.role === 'host'
+          ? 'Waiting for your friend to join…'
+          : 'Connect with a friend first.');
+        document.getElementById('dlg-versus')?.close?.();
+        document.getElementById('dlg-multiplayer')?.showModal?.();
+      }
+      break;
+    case 'rematch':
+      if ((lastRole ?? net.role) === 'guest') {
+        ui.toast('The host decides on a rematch.');
+        break;
+      }
+      if (vsConfig) startVersus(vsConfig); // same config; host relays via the start messages
       break;
     case 'quit-to-menu':
       leaveGame();
@@ -225,8 +287,19 @@ const init = () => {
     onGameOver() {
       // level-end dialog (cleared:false) covers the UX; nothing extra needed
     },
+    onMatchEnd({ winner, youWon, scoreBottom, scoreTop, timeMs }) {
+      // versus only; never records level progress. Local perspective (guest = top):
+      const mySide = youWon ? winner : (winner === 'bottom' ? 'top' : 'bottom');
+      const scoreYou = mySide === 'bottom' ? scoreBottom : scoreTop;
+      const scoreThem = mySide === 'bottom' ? scoreTop : scoreBottom;
+      if (youWon) audio.sfx('win'); // engine already played the loser's 'gameOver'
+      const canRematch = (lastRole ?? net.role) !== 'guest'; // host + solo-vs-AI only
+      ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch });
+    },
     onPauseChange(paused, reason) {
-      if (paused) ui.showPause({ reason, role: lastRole ?? net.role });
+      // versus flag: the lost-connection primary action is an AI takeover
+      // there, so ui labels it honestly instead of "Continue solo"
+      if (paused) ui.showPause({ reason, role: lastRole ?? net.role, versus: Boolean(vsConfig) });
       else ui.hidePause();
     },
     onLevelStart() {
@@ -261,7 +334,7 @@ const init = () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game
   });
 
-  window.__pb = { engine, ui, net, version: '1.0.0' };
+  window.__pb = { engine, ui, net, version: '1.1.0' };
 };
 
 if (document.readyState === 'loading') {

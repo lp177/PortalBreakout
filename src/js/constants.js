@@ -13,3 +13,12 @@ export const MIN_VY_RATIO = 0.25;                 // anti horizontal-lock: |vy| 
 export const POWERUP_SPEED = 170, POWERUP_R = 16, POWERUP_DROP_CHANCE = 0.11;
 export const LIVES_START = 3, MAX_BALLS = 6;
 export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progress.v1';
+
+// Versus mode (see CONTRACT.md "Versus mode")
+export const VS_LIVES = 3, VS_LIFE_MAX = 5;
+export const VS_RAMP_RATE = 0.008, VS_RAMP_MAX = 1.9, VS_BALL_SPEED_MAX = 1150;
+export const AI_PROFILES = {   // top-paddle AI tuning
+  easy:   { speed: 420, err: 60, react: 0.35 },   // px/s, aim error px, re-aim interval s
+  normal: { speed: 560, err: 35, react: 0.22 },
+  hard:   { speed: 700, err: 18, react: 0.12 },
+};

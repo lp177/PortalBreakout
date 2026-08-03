@@ -6,6 +6,7 @@ import {
   PADDLE_SPEED, BALL_R, BALL_SPEED, BALL_SPEED_MAX, SPEED_UP, PORTAL_ENGLISH,
   MIN_VY_RATIO, POWERUP_SPEED, POWERUP_R, POWERUP_DROP_CHANCE,
   LIVES_START, MAX_BALLS,
+  VS_LIVES, VS_LIFE_MAX, VS_RAMP_RATE, VS_RAMP_MAX, VS_BALL_SPEED_MAX, AI_PROFILES,
 } from './constants.js';
 import { BRICK_TYPES, LEVELS } from './levels.js';
 import { audio } from './audio.js';
@@ -37,8 +38,9 @@ const view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
 let callbacks = {};
 let settings = null, reduced = false, assist = false;
 
-let mode = 'solo';           // 'solo' | 'host' | 'guest'
-let phase = 'idle';          // idle|countdown|serve|playing|paused|levelclear|gameover
+let mode = 'solo';           // 'solo' | 'host' | 'guest'  (role)
+let gameMode = 'coop';       // 'coop' | 'versus' — orthogonal to role
+let phase = 'idle';          // idle|countdown|serve|playing|paused|levelclear|gameover|matchend
 let running = false, rafId = 0, lastTs = 0, acc = 0, clock = 0;
 let timeScale = 1, slowmoT = 0, clearPending = false;
 
@@ -54,11 +56,30 @@ let destructibleLeft = 0;
 let stars = [];
 
 // multiplayer
-let guestInput = { x: FIELD_W / 2, fire: false };
+let guestInput = { x: FIELD_W / 2, fire: false, launch: false };
 let sendAcc = 0;
 let snapPrev = null, snapCur = null;   // guest snapshot pair {msg, t}
 let guestPadX = FIELD_W / 2;           // guest's locally-predicted top paddle
 let remotePaused = false;
+let pendingLaunch = false;             // guest: latched launch edge until next input send
+
+// versus mode (see CONTRACT.md "Versus mode")
+const freshVsSide = () => ({
+  bottom: { expand: 0, laser: 0, sticky: 0 },
+  top:    { expand: 0, laser: 0, sticky: 0 },
+});
+let vsLives = { bottom: VS_LIVES, top: VS_LIVES };
+let vsScores = { bottom: 0, top: 0 };
+let vsSide = freshVsSide();            // catcher-scoped powerup timers/charges
+let matchTime = 0;                     // match play time in s (pauses/countdowns excluded)
+let vsRamp = 1;                        // guest: ramp mirrored from snapshots (display only)
+let vsWinner = null;                   // 'bottom' | 'top' once phase === 'matchend'
+let lastBreaker = 'bottom';            // side that broke the last brick → serves the next arena
+let vsCombo = { bottom: 0, top: 0 };   // per-side volley combos (co-op keeps the global `combo`)
+let vsNoHitPasses = 0;                 // portal passes since a brick was last damaged (anti-stalemate)
+let vsServeSide = null;                // guest: side that must serve, mirrored from state.sv
+let ai = null;                         // { profile, reactT, targetX, serveT } — solo versus only
+const VS_NUDGE_PASSES = 4;             // passes without brick damage before the vx nudge kicks in
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -117,7 +138,30 @@ const makePaddles = () => ({
 const newBall = () => ({
   x: FIELD_W / 2, y: BOTTOM_PLANE - BALL_R - 2, vx: 0, vy: 0,
   speed: BALL_SPEED, stuck: true, stuckTo: 'bottom', stuckOffset: 0,
-  portalCd: 0, prevY: 0,
+  portalCd: 0, prevY: 0, owner: 'bottom',
+});
+
+// versus: serve ball stuck to (and owned by) the serving side
+const newServeBall = (side) => {
+  const b = newBall();
+  b.owner = side;
+  if (side === 'top') {
+    b.stuckTo = 'top';
+    b.y = TOP_PLANE + BALL_R + 2;
+  }
+  return b;
+};
+
+// versus anti-stalemate ramp; 1 outside versus. Guests mirror the host's value.
+const curRamp = () => {
+  if (gameMode !== 'versus') return 1;
+  if (mode === 'guest') return vsRamp;
+  return Math.min(1 + VS_RAMP_RATE * matchTime, VS_RAMP_MAX);
+};
+
+const makeAi = (difficulty) => ({
+  profile: AI_PROFILES[difficulty] ?? AI_PROFILES.normal,
+  reactT: 0, targetX: FIELD_W / 2, serveT: 0,
 });
 
 const makeStars = () => {
@@ -183,10 +227,11 @@ const startLoop = () => {
 };
 
 // ---- lifecycle ----
-const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; startLoop(); setupLevel(idx); };
-const startHost = (idx) => { mode = 'host'; guestInput = { x: FIELD_W / 2, fire: false }; startLoop(); setupLevel(idx); };
+const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; gameMode = 'coop'; ai = null; startLoop(); setupLevel(idx); };
+const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; startLoop(); setupLevel(idx); };
 const startGuest = () => {
   mode = 'guest';
+  gameMode = 'coop'; ai = null;      // versus arrives via {t:'level', mode:'versus'}
   phase = 'idle';
   score = 0; lives = LIVES_START; combo = 0; elapsed = 0;
   balls = []; bricks = []; powerups = []; lasers = []; delayed = [];
@@ -194,9 +239,90 @@ const startGuest = () => {
   timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
   snapPrev = null; snapCur = null; remotePaused = false;
   guestPadX = FIELD_W / 2;
+  pendingLaunch = false;
+  vsLives = { bottom: VS_LIVES, top: VS_LIVES };
+  vsScores = { bottom: 0, top: 0 };
+  vsSide = freshVsSide();
+  vsCombo = { bottom: 0, top: 0 }; vsNoHitPasses = 0; vsServeSide = null;
+  matchTime = 0; vsRamp = 1; vsWinner = null;
   levelName = ''; stars = makeStars();
   fx.clear();
   startLoop();
+};
+
+// ---- versus lifecycle ----
+const randomLevel = () => Math.floor(Math.random() * LEVELS.length);
+
+// host→guest level message; in versus it carries mode + per-side lives/scores
+// so a (re)joining guest is fully restored (resync sends the same shape + diff).
+// `fresh` marks a brand-new match (setupMatch): without it a mid-match host
+// Retry looks identical to arena cycling and the guest keeps its old matchTime.
+const sendVsLevel = (diff, fresh) => {
+  const msg = {
+    t: 'level', idx: levelIdx, mode: 'versus',
+    lb: vsLives.bottom, lt: vsLives.top, sb: vsScores.bottom, st: vsScores.top,
+  };
+  if (diff) msg.diff = diff;
+  if (fresh) msg.fresh = true;
+  hostSend(msg);
+};
+
+// fresh match: per-side lives/scores, ramp reset, bottom side serves first
+const setupMatch = (idx) => {
+  levelIdx = idx;
+  score = 0; lives = LIVES_START; combo = 0; elapsed = 0;
+  matchTime = 0; vsRamp = 1; vsWinner = null; lastBreaker = 'bottom';
+  vsLives = { bottom: VS_LIVES, top: VS_LIVES };
+  vsScores = { bottom: 0, top: 0 };
+  vsSide = freshVsSide();
+  vsCombo = { bottom: 0, top: 0 }; vsNoHitPasses = 0;
+  timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
+  laserCd.bottom = 0; laserCd.top = 0;
+  guestInput.launch = false;
+  balls = [newServeBall('bottom')];
+  powerups = []; lasers = []; delayed = [];
+  paddles = makePaddles();
+  timeScale = 1; slowmoT = 0; clearPending = false;
+  vignetteT = 0; resumeT = 0; pausedFrom = null; pauseReason = null;
+  buildBricks(idx);
+  fx.clear();
+  sendVsLevel(null, true);
+  beginCountdown();
+};
+
+// arena cycling: bricks are the arena — when cleared, the next map loads while
+// lives, scores and the speed ramp persist; the last breaker serves one ball
+const loadArena = (idx, serveSide) => {
+  levelIdx = idx;
+  combo = 0;
+  vsCombo = { bottom: 0, top: 0 }; vsNoHitPasses = 0;
+  timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
+  vsSide = freshVsSide();
+  laserCd.bottom = 0; laserCd.top = 0;
+  balls = [newServeBall(serveSide)];
+  powerups = []; lasers = []; delayed = [];
+  timeScale = 1; slowmoT = 0; clearPending = false;
+  buildBricks(idx);
+  // no fx.clear(): the arena-clear confetti plays on into the countdown
+  sendVsLevel();
+  beginCountdown();
+};
+
+const startVersusAI = (difficulty, levelIdx_) => {
+  mode = 'solo';
+  gameMode = 'versus';
+  ai = makeAi(difficulty);
+  startLoop();
+  setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
+};
+
+const startVersusHost = (levelIdx_) => {
+  mode = 'host';
+  gameMode = 'versus';
+  ai = null;
+  guestInput = { x: FIELD_W / 2, fire: false, launch: false };
+  startLoop();
+  setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
 };
 
 const quit = () => {
@@ -208,12 +334,17 @@ const quit = () => {
   balls = []; powerups = []; lasers = []; delayed = [];
   snapPrev = null; snapCur = null; remotePaused = false;
   timeScale = 1; slowmoT = 0; clearPending = false;
+  gameMode = 'coop'; ai = null; vsWinner = null;
   fx.clear();
   input.reset();
 };
 
 const pause = (reason) => {
   if (phase !== 'playing' && phase !== 'serve' && phase !== 'countdown') return;
+  // MP versus is host-only pause (contract): a guest's Esc must not open a
+  // local "Paused" dialog that blocks its paddle while the host's match keeps
+  // running and drains its lives. The connection-lost pause ('net') still shows.
+  if (gameMode === 'versus' && mode === 'guest' && reason !== 'net') return;
   pausedFrom = phase;
   pauseReason = reason ?? 'user';
   phase = 'paused';
@@ -237,16 +368,20 @@ const resume = () => {
 const convertToSolo = () => {
   if (mode === 'guest') return;
   mode = 'solo';
+  // versus: the departed guest's portal can't go uncontrolled — AI takes over
+  if (gameMode === 'versus' && !ai) ai = makeAi('normal');
 };
 
 const nextLevel = () => {
   if (mode === 'guest') return;               // host drives level flow
+  if (gameMode === 'versus') return;          // versus cycles arenas internally
   if (levelIdx + 1 >= LEVELS.length) return;  // main treats last level itself
   setupLevel(levelIdx + 1);
 };
 
 const retryLevel = () => {
   if (mode === 'guest') return;
+  if (gameMode === 'versus') { setupMatch(levelIdx); return; }  // restart the match, same arena
   setupLevel(levelIdx);
 };
 
@@ -307,6 +442,7 @@ const hostFrame = (dt, inp) => {
     followStuck();
   } else if ((phase === 'serve' || phase === 'playing') && resumeT <= 0) {
     elapsed += dt;
+    if (gameMode === 'versus') matchTime += dt;   // ramp clock: paused time excluded
     acc += dt * timeScale;
     let guard = 0;
     while (acc >= STEP && guard++ < 24) {
@@ -314,8 +450,17 @@ const hostFrame = (dt, inp) => {
       step(STEP, inp);
       if (phase !== 'serve' && phase !== 'playing') break;
     }
-    if (inp.launch && (phase === 'serve' || phase === 'playing')) launchStuck();
-  } else if (phase === 'levelclear' || phase === 'gameover' || phase === 'paused') {
+    // versus: each side launches only its own stuck balls (AI serves via aiStep)
+    if (inp.launch && (phase === 'serve' || phase === 'playing')) {
+      launchStuck(gameMode === 'versus' ? 'bottom' : undefined);
+    }
+    if (gameMode === 'versus' && mode === 'host' && guestInput.launch
+        && (phase === 'serve' || phase === 'playing')) {
+      guestInput.launch = false;
+      launchStuck('top');
+    }
+  } else if (phase === 'levelclear' || phase === 'gameover' || phase === 'paused'
+      || phase === 'matchend') {
     // idle: render only
   }
 
@@ -323,14 +468,25 @@ const hostFrame = (dt, inp) => {
     sendAcc += dt;
     if (sendAcc >= 0.04) {
       sendAcc = 0;
-      hostSend({
+      const msg = {
         t: 'state',
         balls: balls.map((b) => [Math.round(b.x), Math.round(b.y)]),
         pb: Math.round(paddles.bottom.x), pt: Math.round(paddles.top.x),
         lasers: lasers.map((l) => [Math.round(l.x), Math.round(l.y), l.dir]),
         pups: powerups.map((p) => [Math.round(p.x), Math.round(p.y), p.kind]),
         score, lives, combo,
-      });
+      };
+      if (gameMode === 'versus') {
+        msg.lb = vsLives.bottom; msg.lt = vsLives.top;
+        msg.sb = vsScores.bottom; msg.st = vsScores.top;
+        msg.ramp = Math.round(curRamp() * 100) / 100;  // display only
+        // which side must serve — the guest's phase is 'playing' during the
+        // host's 'serve', so this is its only cue to show a launch prompt
+        if (phase === 'serve') {
+          msg.sv = balls.some((b) => b.stuck && b.stuckTo === 'top') ? 'top' : 'bottom';
+        }
+      }
+      hostSend(msg);
     }
   }
 };
@@ -359,21 +515,38 @@ const movePaddle = (p, move, targetX, dt) => {
 };
 
 const movePaddles = (dt, inp) => {
-  // paddle width tween (expand powerup)
-  const targetW = timers.expand > 0 ? PADDLE_W_EXPANDED : PADDLE_W;
-  for (const p of [paddles.bottom, paddles.top]) {
+  // paddle width tween (expand powerup; versus scopes it to the catching side)
+  for (const side of ['bottom', 'top']) {
+    const p = paddles[side];
+    const active = gameMode === 'versus' ? vsSide[side].expand : timers.expand;
+    const targetW = active > 0 ? PADDLE_W_EXPANDED : PADDLE_W;
     p.w += (targetW - p.w) * Math.min(1, dt * 10);
     if (Math.abs(p.w - targetW) < 0.5) p.w = targetW;
   }
 
-  movePaddle(paddles.bottom, inp.bottom.move, inp.bottom.targetX, dt);
+  if (gameMode === 'versus' && mode !== 'guest') {
+    // versus: the local player only owns the bottom portal — merge all local
+    // input channels into it (same convention as the guest's top paddle)
+    movePaddle(paddles.bottom, inp.bottom.move || inp.top.move,
+      inp.bottom.targetX ?? inp.top.targetX, dt);
+  } else {
+    movePaddle(paddles.bottom, inp.bottom.move, inp.bottom.targetX, dt);
+  }
 
   if (mode === 'host' && net.connected) {
     const p = paddles.top;
     const maxStep = PADDLE_SPEED * 3 * dt;
     p.x += clamp(clamp(guestInput.x, p.w / 2, FIELD_W - p.w / 2) - p.x, -maxStep, maxStep);
+  } else if (gameMode === 'versus' && ai) {
+    // AI: same movement clamp as a player, max speed from its profile
+    const p = paddles.top;
+    const maxStep = ai.profile.speed * dt;
+    p.x += clamp(ai.targetX - p.x, -maxStep, maxStep);
+    p.x = clamp(p.x, p.w / 2, FIELD_W - p.w / 2);
   } else if (assist && mode === 'solo') {
     paddles.top.x = clamp(paddles.bottom.x, paddles.top.w / 2, FIELD_W - paddles.top.w / 2);
+  } else if (gameMode === 'versus') {
+    // versus host with the guest transiently gone: the top portal holds position
   } else {
     movePaddle(paddles.top, inp.top.move, inp.top.targetX, dt);
   }
@@ -389,10 +562,11 @@ const followStuck = () => {
   }
 };
 
-const launchStuck = () => {
+const launchStuck = (side) => {
   let any = false;
   for (const b of balls) {
     if (!b.stuck) continue;
+    if (side && b.stuckTo !== side) continue;  // versus: serve only your own balls
     any = true;
     const dev = (b.stuckOffset * 35 + rand(-10, 10)) * Math.PI / 180;
     const sp = b.speed || BALL_SPEED;
@@ -419,10 +593,26 @@ const step = (dt, inp) => {
   laserCd.bottom = Math.max(0, laserCd.bottom - dt);
   laserCd.top = Math.max(0, laserCd.top - dt);
 
+  if (gameMode === 'versus') {
+    for (const s of ['bottom', 'top']) {
+      if (vsSide[s].expand > 0) vsSide[s].expand = Math.max(0, vsSide[s].expand - dt);
+      if (vsSide[s].laser > 0) vsSide[s].laser = Math.max(0, vsSide[s].laser - dt);
+    }
+    if (ai) aiStep(dt);
+  }
+
   movePaddles(dt, inp);
   followStuck();
 
-  if (timers.laser > 0) {
+  if (gameMode === 'versus') {
+    // catcher-scoped lasers: each side fires only with its own charge running.
+    // The player's fire keys all serve the bottom portal; AI fires via aiStep.
+    const bottomFire = inp.bottom.fire || inp.top.fire;
+    if (vsSide.bottom.laser > 0 && bottomFire) shootLaser('bottom');
+    if (vsSide.top.laser > 0 && mode === 'host' && net.connected && guestInput.fire) {
+      shootLaser('top');
+    }
+  } else if (timers.laser > 0) {
     const bottomFire = mode === 'host' && net.connected
       ? inp.bottom.fire || inp.top.fire
       : inp.bottom.fire;
@@ -462,11 +652,36 @@ const teleport = (ball, entrySide) => {
   ball.y = exitSide === 'top' ? TOP_PLANE + BALL_R + 2 : BOTTOM_PLANE - BALL_R - 2;
   ball.prevY = ball.y;
   ball.vx += offset * PORTAL_ENGLISH;      // portal english: the core skill mechanic
-  ball.speed = Math.min(ball.speed * SPEED_UP, BALL_SPEED_MAX);
+  const speedCap = gameMode === 'versus'
+    ? Math.min(BALL_SPEED_MAX * curRamp(), VS_BALL_SPEED_MAX)
+    : BALL_SPEED_MAX;
+  ball.speed = Math.min(ball.speed * SPEED_UP, speedCap);
   renorm(ball);
   enforceMinVy(ball);
   ball.portalCd = 0.08;
   combo = 0;
+  if (gameMode === 'versus') {
+    // the catcher owns the ball: they chose the offset (english) that steers it,
+    // so the bricks it breaks are their doing. (owner = exitSide inverted every
+    // score: catching a falling ball donated the return volley to the opponent.)
+    ball.owner = entrySide;
+    vsCombo[entrySide] = 0;            // per-side combo: the catch starts a new volley
+    // anti-stalemate nudge: a dead-center catch loop adds no english, so the
+    // ramp alone can never break it. After several portal passes with no brick
+    // damage, force a growing minimum sideways component; the changing angle
+    // sweeps different brick columns each pass until something is hit.
+    vsNoHitPasses++;
+    if (vsNoHitPasses > VS_NUDGE_PASSES) {
+      const ratio = Math.min(0.2 + 0.05 * (vsNoHitPasses - VS_NUDGE_PASSES), 0.6);
+      const minVx = ball.speed * ratio;
+      if (Math.abs(ball.vx) < minVx) {
+        const dir = ball.vx !== 0 ? Math.sign(ball.vx) : (Math.random() < 0.5 ? -1 : 1);
+        ball.vx = dir * minVx;
+        ball.vy = Math.sign(ball.vy || 1)
+          * Math.sqrt(Math.max(0, ball.speed * ball.speed - minVx * minVx));
+      }
+    }
+  }
 
   fx.portalFlash(ex, ey, entrySide);
   fx.portalFlash(ball.x, ball.y, exitSide);
@@ -474,8 +689,12 @@ const teleport = (ball, entrySide) => {
   fx.shake(0.12);
   hostEv('portal', ex, ey, { x2: Math.round(ball.x), y2: Math.round(ball.y), s1: entrySide, s2: exitSide });
 
-  if (timers.stickyCharges > 0) {
-    timers.stickyCharges--;
+  // sticky is catcher-scoped in versus: the exit paddle only holds the ball
+  // if its own side owns charges
+  const charges = gameMode === 'versus' ? vsSide[exitSide].sticky : timers.stickyCharges;
+  if (charges > 0) {
+    if (gameMode === 'versus') vsSide[exitSide].sticky--;
+    else timers.stickyCharges--;
     ball.stuck = true;
     ball.stuckTo = exitSide;
     ball.stuckOffset = offset;
@@ -491,6 +710,12 @@ const moveBalls = (dt) => {
     if (b.stuck) continue;
     if (b.portalCd > 0) b.portalCd -= dt;
 
+    if (gameMode === 'versus') {
+      // continuously applied ramp floor + cap: a slow-powerup dip below the
+      // floor (via eff) recovers the moment the effect expires
+      const r = curRamp();
+      b.speed = clamp(b.speed, BALL_SPEED * r, Math.min(BALL_SPEED_MAX * r, VS_BALL_SPEED_MAX));
+    }
     const eff = timers.slow > 0 ? Math.max(b.speed * 0.7, BALL_SPEED * 0.7) : b.speed;
     const mul = eff / (Math.hypot(b.vx, b.vy) || 1);
     b.prevY = b.y;
@@ -525,8 +750,10 @@ const moveBalls = (dt) => {
 
     // lost beyond top/bottom edge
     if (b.y - BALL_R > FIELD_H || b.y + BALL_R < 0) {
+      const exitSide = b.y + BALL_R < 0 ? 'top' : 'bottom';
       balls.splice(i, 1);
-      if (balls.length === 0) loseLife();
+      if (gameMode === 'versus') vsLoseLife(exitSide);  // every ball counts, per side
+      else if (balls.length === 0) loseLife();
       continue;
     }
 
@@ -553,7 +780,7 @@ const collideBricks = (b) => {
       const destructible = brick.hp !== Infinity;
       if (b.stuck) return;
       if (timers.fire > 0 && destructible) {
-        hitBrick(brick, Math.max(1, brick.hp)); // fireball pierces: destroy, no bounce
+        hitBrick(brick, Math.max(1, brick.hp), b.owner); // fireball pierces: destroy, no bounce
         return;
       }
       if (ox < oy) {
@@ -563,7 +790,7 @@ const collideBricks = (b) => {
         b.y += Math.sign(dy) * oy;
         b.vy = Math.sign(dy) * Math.abs(b.vy);
       }
-      hitBrick(brick, 1);
+      hitBrick(brick, 1, b.owner);
       return;
     }
   }
@@ -571,8 +798,12 @@ const collideBricks = (b) => {
 
 const brickIndex = (brick) => bricks.indexOf(brick);
 
-const hitBrick = (brick, dmg) => {
-  if (!brick.alive) return;
+// `by`: crediting side ('bottom'|'top') — ball owner or laser side; co-op ignores it
+const hitBrick = (brick, dmg, by) => {
+  // matchend guard: a lower-index ball or in-flight laser finishing its physics
+  // step after endMatch() must not mutate scores or resurrect the match by
+  // clearing the arena behind the result dialog
+  if (!brick.alive || phase === 'matchend') return;
   const cx = brick.x + BRICK_W / 2, cy = brick.y + BRICK_H / 2;
   const info = BRICK_TYPES[brick.type];
   if (brick.hp === Infinity) {
@@ -582,6 +813,7 @@ const hitBrick = (brick, dmg) => {
     return;
   }
   brick.hp -= dmg;
+  vsNoHitPasses = 0;            // brick progress — the anti-stalemate nudge stands down
   if (brick.hp > 0) {
     audio.sfx('silver');
     fx.sparks(cx, cy, info.color);
@@ -590,19 +822,29 @@ const hitBrick = (brick, dmg) => {
   }
   brick.alive = false;
   destructibleLeft--;
-  const pts = Math.round(info.points * (1 + combo * 0.1)); // combo-multiplied award
-  score += pts;
-  combo++;
+  let pts;
+  if (gameMode === 'versus') {
+    const side = by === 'top' ? 'top' : 'bottom';
+    pts = Math.round(info.points * (1 + vsCombo[side] * 0.1)); // per-side combo math
+    vsScores[side] += pts;      // per-side score, attributed via ball/laser ownership
+    lastBreaker = side;         // the last breaker serves the next arena
+    vsCombo[side]++;
+    combo = vsCombo[side];      // mirror for sfx pitch + the guest's state snapshot
+  } else {
+    pts = Math.round(info.points * (1 + combo * 0.1)); // combo-multiplied award
+    score += pts;
+    combo++;
+  }
   audio.sfx('brick', { combo });
   fx.brickBurst(cx, cy, info.color);
   fx.floatText(cx, cy, `+${pts}`, info.color);
   hostSend({ t: 'brick', idx: brickIndex(brick), hp: 0 });
-  if (brick.type === 'E') explode(brick);
+  if (brick.type === 'E') explode(brick, by);
   maybeDrop(brick, cx, cy);
   if (destructibleLeft <= 0) triggerClear();
 };
 
-const explode = (brick) => {
+const explode = (brick, by) => {
   const cx = brick.x + BRICK_W / 2, cy = brick.y + BRICK_H / 2;
   audio.sfx('explode');
   fx.explosion(cx, cy);
@@ -620,7 +862,7 @@ const explode = (brick) => {
       if (!n?.alive || n.hp === Infinity) continue;
       stagger += 0.02;
       const delay = 0.06 + stagger; // staggered chain: juicy dominoes
-      delayed.push({ t: delay, fn: () => { if (n.alive) hitBrick(n, 1); } });
+      delayed.push({ t: delay, fn: () => { if (n.alive) hitBrick(n, 1, by); } });
     }
   }
 };
@@ -654,12 +896,17 @@ const maybeDrop = (brick, cx, cy) => {
   hostEv('drop', cx, cy);
 };
 
-const applyPowerup = (kind, x, y) => {
+// `catcher`: the paddle side that caught the drop; scopes sided effects in versus
+const applyPowerup = (kind, x, y, catcher = 'bottom') => {
   const info = POWERUP_INFO[kind];
   audio.sfx('powerup');
   fx.floatText(x, y, info.label, info.color);
   fx.sparks(x, y, info.color);
-  hostEv('powerup', x, y, kind);
+  if (gameMode === 'versus') {
+    hostSend({ t: 'ev', name: 'powerup', x: Math.round(x), y: Math.round(y), extra: kind, side: catcher });
+  } else {
+    hostEv('powerup', x, y, kind);
+  }
   switch (kind) {
     case 'multi': {
       const src = balls.slice();
@@ -681,12 +928,24 @@ const applyPowerup = (kind, x, y) => {
       }
       break;
     }
-    case 'expand': timers.expand = 15; break;
-    case 'slow': timers.slow = 10; break;
-    case 'sticky': timers.stickyCharges = Math.min(timers.stickyCharges + 3, 9); break;
-    case 'laser': timers.laser = 10; break;
-    case 'life': lives = Math.min(lives + 1, 9); break;
-    case 'fire': timers.fire = 8; break;
+    case 'expand':
+      if (gameMode === 'versus') vsSide[catcher].expand = 15;
+      else timers.expand = 15;
+      break;
+    case 'slow': timers.slow = 10; break;    // global ball effect, even in versus
+    case 'sticky':
+      if (gameMode === 'versus') vsSide[catcher].sticky = Math.min(vsSide[catcher].sticky + 3, 9);
+      else timers.stickyCharges = Math.min(timers.stickyCharges + 3, 9);
+      break;
+    case 'laser':
+      if (gameMode === 'versus') vsSide[catcher].laser = 10;
+      else timers.laser = 10;
+      break;
+    case 'life':
+      if (gameMode === 'versus') vsLives[catcher] = Math.min(vsLives[catcher] + 1, VS_LIFE_MAX);
+      else lives = Math.min(lives + 1, 9);
+      break;
+    case 'fire': timers.fire = 8; break;     // global ball effect, even in versus
   }
 };
 
@@ -699,7 +958,7 @@ const movePowerups = (dt) => {
       const pad = paddles[side];
       if (Math.abs(p.x - pad.x) <= pad.w / 2 + POWERUP_R
           && Math.abs(p.y - pad.y) <= PADDLE_H / 2 + POWERUP_R) {
-        applyPowerup(p.kind, p.x, p.y);
+        applyPowerup(p.kind, p.x, p.y, side);
         caught = true;
         break;
       }
@@ -735,7 +994,7 @@ const moveLasers = (dt) => {
       fx.sparks(l.x, l.y, BRICK_TYPES.G.color);
       hostEv('gold', l.x, l.y);
     } else {
-      hitBrick(brick, 1);
+      hitBrick(brick, 1, l.dir === -1 ? 'bottom' : 'top');  // firing side gets the credit
     }
     lasers.splice(i, 1);
   }
@@ -764,20 +1023,124 @@ const loseLife = () => {
   }
 };
 
-const triggerClear = () => {
-  if (clearPending || phase === 'levelclear') return;
-  clearPending = true;
-  if (reduced) {
-    finishClear();
-  } else {
-    slowmoT = 0.35; // slow-mo moment on the last brick
-    timeScale = 0.25;
+// ---- versus: life loss, match end, AI ----
+const vsLoseLife = (side) => {
+  // arena already won (slow-mo clear in progress) or match decided — ignore
+  if (clearPending || phase === 'matchend') return;
+  vsLives[side]--;
+  combo = 0;
+  vsCombo = { bottom: 0, top: 0 };
+  vsNoHitPasses = 0;
+  audio.sfx('lifeLost');
+  fx.shake(0.8);
+  vignetteT = 0.6;
+  hostSend({ t: 'ev', name: 'lifeLost', side });   // side is REQUIRED in versus
+  if (vsLives[side] <= 0) {
+    endMatch(side === 'bottom' ? 'top' : 'bottom');
+    return;
   }
+  if (balls.length === 0) {
+    delayed = [];                      // pending explosive chains die with the volley
+    balls = [newServeBall(side)];      // the side that lost the life serves next
+    beginCountdown();
+  }
+};
+
+const endMatch = (winner) => {
+  vsWinner = winner;
+  phase = 'matchend';
+  timeScale = 1; slowmoT = 0; clearPending = false;
+  delayed = [];
+  const youWon = winner === (mode === 'guest' ? 'top' : 'bottom');
+  if (youWon) fx.confetti();
+  else audio.sfx('gameOver');          // 'win' sfx is main's call, per youWon
+  // timeMs rides along so the guest's dialog shows the host's authoritative
+  // match clock (the guest's local one also counts the host's serve-wait)
+  hostSend({ t: 'phase', v: 'matchend', winner, timeMs: Math.round(matchTime * 1000) });
+  callbacks.onMatchEnd?.({
+    winner, youWon,
+    scoreBottom: vsScores.bottom, scoreTop: vsScores.top,
+    timeMs: Math.round(matchTime * 1000),
+  });
+};
+
+// Top-paddle AI (solo versus only). Reads nothing but ball/powerup/brick state.
+const aiHasLaserTarget = () => {
+  const col = clamp(Math.floor(paddles.top.x / BRICK_W), 0, GRID_COLS - 1);
+  for (let row = 0; row < GRID_ROWS; row++) {
+    const b = bricks[row * GRID_COLS + col];
+    if (b?.alive && b.hp !== Infinity) return true;
+  }
+  return false;
+};
+
+const aiThink = () => {
+  // threat: the nearest ball heading top; predict its x at the paddle plane
+  let threat = null, bestDy = Infinity;
+  for (const b of balls) {
+    if (b.stuck || b.vy >= 0) continue;
+    const dy = b.y - TOP_PLANE;
+    if (dy >= 0 && dy < bestDy) { bestDy = dy; threat = b; }
+  }
+  if (threat) {
+    const raw = threat.x + threat.vx * (bestDy / -threat.vy);
+    // fold the straight-line x back into the field: side-wall reflection
+    const span = FIELD_W - 2 * BALL_R;
+    let xr = (raw - BALL_R) % (2 * span);
+    if (xr < 0) xr += 2 * span;
+    if (xr > span) xr = 2 * span - xr;
+    // aim error grows with ball speed (which the ramp floor drives up) and ramp
+    const err = ai.profile.err * (threat.speed / BALL_SPEED) * (0.5 + curRamp() / 2);
+    ai.targetX = clamp(xr + BALL_R + rand(-err, err),
+      paddles.top.w / 2, FIELD_W - paddles.top.w / 2);
+    return;
+  }
+  // idle: drift toward the nearest catchable powerup (floating up), else center
+  let pup = null, best = Infinity;
+  for (const p of powerups) {
+    if (p.vy >= 0) continue;
+    const d = Math.abs(p.y - PADDLE_TOP_Y);
+    if (d < best) { best = d; pup = p; }
+  }
+  ai.targetX = pup ? pup.x : FIELD_W / 2;
+};
+
+const aiStep = (dt) => {
+  // auto-serve stuck balls after ~1 s (standard serve spread via launchStuck)
+  if (balls.some((b) => b.stuck && b.stuckTo === 'top')) {
+    ai.serveT += dt;
+    if (ai.serveT >= 1) { ai.serveT = 0; launchStuck('top'); }
+  } else {
+    ai.serveT = 0;
+  }
+  ai.reactT -= dt;
+  if (ai.reactT <= 0) { ai.reactT = ai.profile.react; aiThink(); }
+  // opportunistic laser at live bricks, on the normal cooldown
+  if (vsSide.top.laser > 0 && laserCd.top <= 0 && aiHasLaserTarget()) shootLaser('top');
+};
+
+const triggerClear = () => {
+  if (clearPending || phase === 'levelclear' || phase === 'matchend') return;
+  clearPending = true;
+  // finishClear is always deferred to frame(): in versus it calls loadArena(),
+  // which swaps the balls/lasers/bricks arrays out from under the moveBalls /
+  // moveLasers / tickDelayed iterations that reach hitBrick. With reduced
+  // effects the deferral is one frame (no visible slow-mo).
+  slowmoT = reduced ? 0.001 : 0.35; // slow-mo moment on the last brick
+  timeScale = reduced ? 1 : 0.25;
 };
 
 const finishClear = () => {
   clearPending = false;
   timeScale = 1;
+  if (gameMode === 'versus') {
+    // arena cycle: brief celebration, then the next map; state persists
+    audio.sfx('levelClear');
+    fx.confetti();
+    hostEv('levelClear');
+    loadArena((levelIdx + 1) % LEVELS.length, lastBreaker);
+    return;
+  }
   phase = 'levelclear';
   audio.sfx('levelClear');
   fx.confetti();
@@ -797,7 +1160,8 @@ const resync = () => {
     if (!b.alive) diff.push([i, 0]);
     else if (b.hp !== Infinity && b.hp !== BRICK_TYPES[b.type].hp) diff.push([i, b.hp]);
   });
-  hostSend({ t: 'level', idx: levelIdx, diff });
+  if (gameMode === 'versus') sendVsLevel(diff);  // carries mode + per-side lives/scores
+  else hostSend({ t: 'level', idx: levelIdx, diff });
   if (phase === 'playing' || phase === 'serve') {
     hostSend({ t: 'phase', v: 'playing' });
   } else if (phase === 'paused') {
@@ -805,6 +1169,8 @@ const resync = () => {
     hostSend({ t: 'phase', v: 'paused' });
   } else if (phase === 'levelclear' || phase === 'gameover') {
     hostSend({ t: 'phase', v: phase });
+  } else if (phase === 'matchend') {
+    hostSend({ t: 'phase', v: 'matchend', winner: vsWinner });
   }
   // 'countdown': the 'level' message already restarts the guest's countdown
 };
@@ -812,15 +1178,28 @@ const resync = () => {
 // ---- multiplayer: guest side ----
 const guestFrame = (dt, inp) => {
   if (phase === 'countdown') tickCountdown(dt);
-  if (phase === 'playing' && !remotePaused) elapsed += dt;
+  if (phase === 'playing' && !remotePaused) {
+    elapsed += dt;
+    if (gameMode === 'versus') matchTime += dt;
+  }
 
   // all local input channels drive the guest's (top) paddle
   const move = inp.top.move || inp.bottom.move;
   const targetX = inp.top.targetX ?? inp.bottom.targetX;
   const pad = paddles.top;
-  const targetW = timers.expand > 0 ? PADDLE_W_EXPANDED : PADDLE_W;
-  pad.w += (targetW - pad.w) * Math.min(1, dt * 10);
-  paddles.bottom.w = pad.w;
+  if (gameMode === 'versus') {
+    // per-side expand mirrors (set by the powerup ev, which carries the catcher)
+    for (const side of ['bottom', 'top']) {
+      const p = paddles[side];
+      const tW = vsSide[side].expand > 0 ? PADDLE_W_EXPANDED : PADDLE_W;
+      p.w += (tW - p.w) * Math.min(1, dt * 10);
+      if (vsSide[side].expand > 0) vsSide[side].expand = Math.max(0, vsSide[side].expand - dt);
+    }
+  } else {
+    const targetW = timers.expand > 0 ? PADDLE_W_EXPANDED : PADDLE_W;
+    pad.w += (targetW - pad.w) * Math.min(1, dt * 10);
+    paddles.bottom.w = pad.w;
+  }
   const fake = { x: guestPadX, w: pad.w };
   movePaddle(fake, move, targetX, dt);
   guestPadX = fake.x;
@@ -830,10 +1209,18 @@ const guestFrame = (dt, inp) => {
     if (timers[k] > 0) timers[k] = Math.max(0, timers[k] - dt);
   }
 
+  // latch launch presses until the next input packet (versus: guest serves)
+  pendingLaunch = pendingLaunch || Boolean(inp.launch);
+
   sendAcc += dt;
   if (sendAcc >= 1 / 30 && net.connected) {
     sendAcc = 0;
-    net.send({ t: 'input', x: Math.round(guestPadX), fire: Boolean(inp.top.fire || inp.bottom.fire) });
+    net.send({
+      t: 'input', x: Math.round(guestPadX),
+      fire: Boolean(inp.top.fire || inp.bottom.fire),
+      launch: pendingLaunch,
+    });
+    pendingLaunch = false;
   }
 
   interpolateSnapshots();
@@ -867,6 +1254,14 @@ const interpolateSnapshots = () => {
     return { x: lerp(ap[0], pp[0]), y: lerp(ap[1], pp[1]), kind: pp[2] };
   });
   score = bm.score; lives = bm.lives; combo = bm.combo;
+  if (gameMode === 'versus') {
+    if (typeof bm.lb === 'number') { vsLives.bottom = bm.lb; vsLives.top = bm.lt; }
+    if (typeof bm.sb === 'number') { vsScores.bottom = bm.sb; vsScores.top = bm.st; }
+    if (typeof bm.ramp === 'number') vsRamp = bm.ramp;
+    // serve cue: present only while the host is in its 'serve' phase, so it
+    // self-clears the moment the ball is launched
+    vsServeSide = bm.sv === 'top' || bm.sv === 'bottom' ? bm.sv : null;
+  }
 };
 
 const GUEST_EV = {
@@ -879,13 +1274,25 @@ const GUEST_EV = {
   wall: (m) => { audio.sfx('wall'); fx.sparks(m.x, m.y, '#9fb6ff'); },
   gold: (m) => { audio.sfx('gold'); fx.sparks(m.x, m.y, BRICK_TYPES.G.color); },
   explode: (m) => { audio.sfx('explode'); fx.explosion(m.x, m.y); fx.shake(0.5); },
-  lifeLost: () => { audio.sfx('lifeLost'); fx.shake(0.8); vignetteT = 0.6; },
+  lifeLost: (m) => {
+    audio.sfx('lifeLost'); fx.shake(0.8); vignetteT = 0.6;
+    // versus: mirror the per-side decrement instantly (snapshots confirm it)
+    if (gameMode === 'versus' && (m.side === 'bottom' || m.side === 'top')
+        && vsLives[m.side] > 0) vsLives[m.side]--;
+  },
   powerup: (m) => {
     const info = POWERUP_INFO[m.extra];
     audio.sfx('powerup');
     if (info) { fx.floatText(m.x, m.y, info.label, info.color); fx.sparks(m.x, m.y, info.color); }
     // mirror timers locally so the guest HUD shows the same E/S/L/F/C chips
-    if (m.extra === 'expand') timers.expand = 15;
+    // (versus: expand is catcher-scoped — the ev carries the catching side)
+    if (m.extra === 'expand') {
+      if (gameMode === 'versus' && (m.side === 'bottom' || m.side === 'top')) {
+        vsSide[m.side].expand = 15;
+      } else {
+        timers.expand = 15;
+      }
+    }
     if (m.extra === 'fire') timers.fire = 8;
     if (m.extra === 'slow') timers.slow = 10;
     if (m.extra === 'laser') timers.laser = 10;
@@ -902,7 +1309,7 @@ const GUEST_EV = {
   gameOver: () => audio.sfx('gameOver'),
 };
 
-const guestPhase = (v) => {
+const guestPhase = (v, msg = {}) => {
   switch (v) {
     case 'countdown':
       phase = 'countdown'; countdownT = COUNTDOWN_LEN; lastTick = 0; remotePaused = false;
@@ -923,6 +1330,21 @@ const guestPhase = (v) => {
       phase = 'gameover'; remotePaused = false;
       callbacks.onLevelEnd?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000), cleared: false });
       break;
+    case 'matchend': {
+      phase = 'matchend'; remotePaused = false;
+      vsWinner = msg.winner === 'top' ? 'top' : 'bottom';
+      const youWon = vsWinner === 'top';        // the guest is always the top side
+      if (youWon) fx.confetti();
+      else audio.sfx('gameOver');
+      callbacks.onMatchEnd?.({
+        winner: vsWinner, youWon,
+        scoreBottom: vsScores.bottom, scoreTop: vsScores.top,
+        // prefer the host's authoritative clock; the local one drifts by
+        // whatever serve-wait the two sides counted differently
+        timeMs: typeof msg.timeMs === 'number' ? msg.timeMs : Math.round(matchTime * 1000),
+      });
+      break;
+    }
     case 'backtomenu':
       quit();
       callbacks.onRemoteQuit?.();
@@ -936,6 +1358,8 @@ const onNetMessage = (msg) => {
     if (msg.t === 'input') {
       guestInput.x = clamp(Number(msg.x) || 0, 0, FIELD_W);
       guestInput.fire = Boolean(msg.fire);
+      // versus: latch the guest's serve request until hostFrame consumes it
+      if (gameMode === 'versus' && msg.launch) guestInput.launch = true;
     }
     return;
   }
@@ -945,14 +1369,35 @@ const onNetMessage = (msg) => {
       snapCur = { msg, t: performance.now() };
       if (phase === 'idle') phase = 'playing';
       break;
-    case 'level':
+    case 'level': {
+      // an arena reload mid-match (cycling / resync) keeps versus match state;
+      // anything else (fresh match — msg.fresh, rematch, co-op level) starts
+      // clean. Without the fresh flag a host mid-match Retry (setupMatch) is
+      // indistinguishable from cycling and the guest's matchTime never resets.
+      const cycling = gameMode === 'versus' && msg.mode === 'versus' && !msg.fresh
+        && phase !== 'idle' && phase !== 'matchend';
+      gameMode = msg.mode === 'versus' ? 'versus' : 'coop';
       buildBricks(msg.idx);
       levelIdx = msg.idx;
       score = 0; combo = 0; lives = LIVES_START; elapsed = 0;
       powerups = []; lasers = []; balls = [];
       snapPrev = null; snapCur = null;
       timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
-      fx.clear();
+      if (gameMode === 'versus') {
+        vsSide = freshVsSide();
+        vsServeSide = null;    // stale serve cue must not survive an arena swap
+        if (!cycling) {
+          matchTime = 0; vsRamp = 1; vsWinner = null;
+          vsLives = { bottom: VS_LIVES, top: VS_LIVES };
+          vsScores = { bottom: 0, top: 0 };
+        }
+        // restore per-side state sent with the level (arena cycle / resync)
+        if (typeof msg.lb === 'number') { vsLives.bottom = msg.lb; vsLives.top = msg.lt; }
+        if (typeof msg.sb === 'number') { vsScores.bottom = msg.sb; vsScores.top = msg.st; }
+        // no fx.clear(): the arena-clear confetti keeps playing, like the host
+      } else {
+        fx.clear();
+      }
       // resync diff (host re-sent state after a reconnect): apply silently
       if (Array.isArray(msg.diff)) {
         for (const d of msg.diff) {
@@ -965,6 +1410,7 @@ const onNetMessage = (msg) => {
       phase = 'countdown'; countdownT = COUNTDOWN_LEN; lastTick = 0;
       callbacks.onLevelStart?.(); // host advanced — close any leftover dialog
       break;
+    }
     case 'brick': {
       const b = bricks[msg.idx];
       if (!b) break;
@@ -988,7 +1434,7 @@ const onNetMessage = (msg) => {
       GUEST_EV[msg.name]?.(msg);
       break;
     case 'phase':
-      guestPhase(msg.v);
+      guestPhase(msg.v, msg);
       break;
   }
 };
@@ -1177,7 +1623,46 @@ const drawLasers = () => {
   ctx.restore();
 };
 
+// versus HUD: orange side bottom-left, blue side top-right, map name top-center,
+// small ramp indicator bottom-center. Co-op HUD below stays untouched.
+const drawVersusHud = () => {
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  // map name, top center
+  ctx.textAlign = 'center';
+  ctx.font = '15px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText(`${levelIdx + 1} · ${levelName}`, FIELD_W / 2, 24);
+  // bottom side (orange): hearts + score, bottom-left
+  ctx.textAlign = 'left';
+  ctx.font = '20px system-ui, sans-serif';
+  ctx.fillStyle = ORANGE;
+  const hb = '♥'.repeat(Math.max(0, vsLives.bottom));
+  ctx.fillText(hb, 16, FIELD_H - 24);
+  const hbW = ctx.measureText(hb).width;
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillText(String(vsScores.bottom), 16 + hbW + 14, FIELD_H - 24);
+  // top side (blue): hearts + score, top-right
+  ctx.textAlign = 'right';
+  ctx.font = '20px system-ui, sans-serif';
+  ctx.fillStyle = BLUE;
+  const ht = '♥'.repeat(Math.max(0, vsLives.top));
+  ctx.fillText(ht, FIELD_W - 16, 24);
+  const htW = ctx.measureText(ht).width;
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillText(String(vsScores.top), FIELD_W - 16 - htW - 14, 24);
+  // ramp indicator, bottom center, subtle
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText(`×${(Math.round(curRamp() * 10) / 10).toFixed(1)}`, FIELD_W / 2, FIELD_H - 14);
+  ctx.restore();
+};
+
 const drawHud = () => {
+  if (gameMode === 'versus') { drawVersusHud(); return; }
   ctx.save();
   ctx.textBaseline = 'middle';
   // score
@@ -1252,7 +1737,22 @@ const drawOverlays = () => {
     const size = 110 + 40 * (reduced ? 0 : frac);
     centerText(String(n), FIELD_H / 2, size, 'rgba(255,255,255,0.95)', BLUE);
   } else if (phase === 'serve' && mode !== 'guest') {
-    centerText('Press launch', FIELD_H / 2 + 90, 22, 'rgba(255,255,255,0.5)');
+    if (gameMode === 'versus' && !balls.some((b) => b.stuck && b.stuckTo === 'bottom')) {
+      centerText(mode === 'host' ? 'Your friend serves…' : 'The computer serves…',
+        FIELD_H / 2 + 90, 22, 'rgba(255,255,255,0.5)');
+    } else {
+      centerText('Press launch', FIELD_H / 2 + 90, 22, 'rgba(255,255,255,0.5)');
+    }
+  } else if (mode === 'guest' && gameMode === 'versus' && phase === 'playing'
+      && vsServeSide && !remotePaused) {
+    // the guest's phase is 'playing' during the host's 'serve' — without this
+    // cue a guest who must serve stares at a frozen ball with no affordance
+    centerText(vsServeSide === 'top' ? 'Press launch' : 'Your friend serves…',
+      FIELD_H / 2 + 90, 22, 'rgba(255,255,255,0.5)');
+  } else if (phase === 'matchend') {
+    const won = vsWinner === (mode === 'guest' ? 'top' : 'bottom');
+    centerText(won ? 'YOU WIN!' : 'YOU LOSE', FIELD_H / 2 - 30, 56, '#ffffff',
+      won ? ORANGE : '#ef5350');
   } else if (phase === 'levelclear') {
     centerText('LEVEL CLEAR!', FIELD_H / 2 - 30, 56, '#ffffff', ORANGE);
   } else if (phase === 'gameover') {
@@ -1279,6 +1779,8 @@ export const engine = {
   startSolo,
   startHost,
   startGuest,
+  startVersusAI,
+  startVersusHost,
   onNetMessage,
   pause,
   resume,

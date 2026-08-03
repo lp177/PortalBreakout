@@ -50,11 +50,20 @@ let pauseChoiceMade = false;
 // connection-lost pause on the guest: "Resume" must NOT close the dialog
 let pauseNetHold = false;
 
+// #dlg-level-end is shared by showLevelEnd and showMatchEnd (versus): the mode
+// decides what #btn-le-next emits, and each show* fully restores the shared
+// labels/visibility it ping-pongs over
+let levelEndMode = 'level'; // 'level' | 'match'
+
 // multiplayer dialog state
 let hosting = false;
 let mpConnected = false;
 let currentRoomCode = null;
 let bannerTimer = 0;
+
+// #vs-friend-hint default content (spans), saved at wire time so the guest
+// override can be undone without innerHTML
+let vsFriendHintDefault = [];
 
 // rebind capture state: { action, btn } while a key is being listened for
 let listening = null;
@@ -322,6 +331,7 @@ const resetMpDialog = () => {
   $('mp-room-code').textContent = '';
   $('btn-mp-host').disabled = false;
   $('mp-status').textContent = '';
+  updateVersusFriendBtn();
 };
 
 const wireMultiplayer = () => {
@@ -376,6 +386,44 @@ const wireMultiplayer = () => {
   }
 };
 
+// ---------- versus dialog ----------
+// Local role derived from the same state netStatus/showRoomCode already keep:
+// a room code only ever exists on the host; a connection without one = guest.
+// A CONNECTED session is required either way — a host still waiting for a
+// friend must keep the connect-first label (contract: "when MP-connected").
+const mpRole = () => (mpConnected ? (currentRoomCode ? 'host' : 'guest') : null);
+
+const updateVersusFriendBtn = () => {
+  const btn = $('btn-vs-friend');
+  const hint = $('vs-friend-hint');
+  const role = mpRole();
+
+  btn.disabled = role === 'guest';
+  btn.classList.toggle('btn-primary', role === 'host');
+  btn.classList.toggle('btn-tonal', role !== 'host');
+  btn.textContent = role ? 'Start online match' : 'Connect with a friend first';
+  if (role === 'guest') hint.textContent = 'The host starts the match';
+  else hint.replaceChildren(...vsFriendHintDefault);
+};
+
+const wireVersus = () => {
+  vsFriendHintDefault = [...$('vs-friend-hint').childNodes];
+
+  $('btn-vs-ai').addEventListener('click', () => {
+    emit('versus-ai', { difficulty: $('vs-difficulty').value });
+    closeDialog($('dlg-versus'));
+  });
+
+  // main.js decides: start the match (host) or redirect to the multiplayer
+  // dialog — close this one first so modals never stack
+  $('btn-vs-friend').addEventListener('click', () => {
+    closeDialog($('dlg-versus'));
+    emit('versus-mp');
+  });
+
+  updateVersusFriendBtn();
+};
+
 // ---------- pause / level-end / quit ----------
 const wireGameDialogs = () => {
   const dlgPause = $('dlg-pause');
@@ -414,7 +462,7 @@ const wireGameDialogs = () => {
 
   $('btn-le-next').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
-    emit('next-level');
+    emit(levelEndMode === 'match' ? 'rematch' : 'next-level');
   });
   $('btn-le-replay').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
@@ -463,6 +511,10 @@ const statRow = (parent, label, value, badge = null) => {
 // ---------- public API ----------
 export const ui = {
   init({ onAction }) {
+    // onAction(name, data) names: 'play' {levelIdx}, 'replay' {levelIdx},
+    // 'host', 'join' {code}, 'options-changed' {settings}, 'pause', 'resume',
+    // 'retry', 'next-level', 'quit-to-menu', 'cancel-mp',
+    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch'
     emit = (name, data) => onAction(name, data);
     if (initialized) return;
     initialized = true;
@@ -472,6 +524,7 @@ export const ui = {
     wireMenu();
     wireOptionsForm();
     wireMultiplayer();
+    wireVersus();
     wireGameDialogs();
     syncOptionsForm();
   },
@@ -488,6 +541,7 @@ export const ui = {
   },
 
   showLevelEnd({ cleared, score, best, levelIdx, isLast }) {
+    levelEndMode = 'level';
     const finale = cleared && isLast;
     $('le-title').textContent = !cleared
       ? 'Game over'
@@ -502,10 +556,32 @@ export const ui = {
     statRow(stats, 'Best', Math.max(best, score).toLocaleString(),
       isNewBest ? 'NEW BEST!' : null);
 
-    // the finale keeps the primary button as a celebratory "Finish" → menu
+    // the finale keeps the primary button as a celebratory "Finish" → menu.
+    // showMatchEnd shares this dialog: restore everything it may have changed
     const next = $('btn-le-next');
     next.hidden = !cleared;
     next.textContent = finale ? 'Finish' : 'Next level';
+    $('btn-le-replay').hidden = false;
+    openDialog($('dlg-level-end'));
+  },
+
+  showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch }) {
+    levelEndMode = 'match';
+    $('le-title').textContent = youWon ? 'You win! 🏆' : 'You lose';
+
+    const stats = $('le-stats');
+    stats.textContent = '';
+    const secs = Math.max(0, Math.round(timeMs / 1000));
+    statRow(stats, 'You', scoreYou.toLocaleString());
+    statRow(stats, 'Opponent', scoreThem.toLocaleString());
+    statRow(stats, 'Match time',
+      `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`);
+
+    // MP guest can't rematch — "the host picks" convention
+    const next = $('btn-le-next');
+    next.hidden = !canRematch;
+    next.textContent = 'Rematch';
+    $('btn-le-replay').hidden = true;
     openDialog($('dlg-level-end'));
   },
 
@@ -515,7 +591,11 @@ export const ui = {
     pauseNetHold = lost && info.role !== 'host';
     $('dlg-pause-title').textContent = lost ? 'Connection lost' : 'Paused';
     $('btn-resume').textContent = lost
-      ? (info.role === 'host' ? 'Continue solo' : 'Keep waiting')
+      // versus: the host's "continue" hands the top portal to the AI, so the
+      // button must not promise a solo continuation that doesn't exist there
+      ? (info.role === 'host'
+        ? (info.versus ? 'Continue vs computer' : 'Continue solo')
+        : 'Keep waiting')
       : 'Resume';
     openDialog($('dlg-pause'));
   },
@@ -566,6 +646,7 @@ export const ui = {
         status.textContent = data.message ?? 'Connection closed';
         break;
     }
+    updateVersusFriendBtn();
   },
 
   showRoomCode(code) {
@@ -573,6 +654,7 @@ export const ui = {
     currentRoomCode = code;
     $('mp-room-code').textContent = code;
     $('mp-room-box').hidden = false;
+    updateVersusFriendBtn();
   },
 
   toast(text) {

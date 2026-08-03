@@ -229,3 +229,62 @@ Dark Material theme. Tokens in `:root`: `--bg: #121212`, `--surface: #1e1e1e`, `
 ## Multiplayer flow
 
 Host: menu → Multiplayer → "Create room" → room code + share link (`?join=CODE` URL) shown → friend joins → host picks level → play. Guest: Multiplayer → paste code (or arrive via link → dialog pre-filled) → "Join". On `lost`: engine pauses, banner "⚠ Connection lost — waiting…", dialog offers **Wait** / **Continue solo** (engine converts to solo: local player takes both paddles) / **Quit**. On `reconnected` while waiting: countdown + resume. Guest side mirrors the same UX.
+
+## Versus mode (v1.1)
+
+A competitive mode: **bottom side vs top side**. Two variants: **vs Computer** (local player = bottom paddle, engine-internal AI = top paddle) and **vs Friend** (host = bottom, guest = top, host authoritative — same transport as co-op). Co-op ("campaign") behavior above is unchanged; versus is a parallel mode, never records level progress, and reuses the same field/bricks/powerups/portal physics.
+
+### Rules
+
+- Each side has `VS_LIVES = 3` lives (cap `VS_LIFE_MAX = 5` via life powerups). A ball crossing the **bottom** edge uncaught → bottom side −1 life; **top** edge → top side −1 life. Every ball counts individually in multiball. First side at 0 → match ends immediately, the other side wins.
+- After a life loss (match not over): if no balls remain in play, the side that lost the life serves next (stuck ball on their paddle). The AI auto-launches after ~1 s; the MP guest launches via its own launch input (relayed).
+- **Bricks persist as the arena.** Ball ownership = the side whose portal last emitted it (server on serve); bricks broken credit the owner's score (same combo ×(1+0.1·combo) math, per-side scores). When a map is fully cleared: brief celebration, arena reloads with the next map (`(idx+1) % 50`), single ball re-served by the side that broke the last brick; lives, scores and the speed ramp persist.
+- **Anti-stalemate ramp:** match time `t` (s) drives `ramp = min(1 + VS_RAMP_RATE·t, VS_RAMP_MAX)`. Effective ball speed floor = `BALL_SPEED·ramp`; per-teleport `SPEED_UP` still applies; hard cap `min(BALL_SPEED_MAX·ramp, VS_BALL_SPEED_MAX)`. `slow` still gives ×0.7 temporary relief; the floor re-applies when it expires.
+- **Powerups are catcher-scoped** where sided: `expand`/`sticky`/`laser` apply to the catching paddle only; `life` = +1 to the catcher's side; `multi`/`slow`/`fire` remain global ball effects. The AI may catch powerups.
+- HUD: bottom lives as orange ♥ bottom-left, top lives as blue ♥ top-right, per-side scores beside them, map name center-top, ramp indicator (e.g. `×1.4`) center-bottom, subtle and small.
+- Pause: solo-vs-AI pauses like solo. MP versus: host-only pause (existing rules). No `recordLevelResult` calls ever in versus.
+
+### Constants (added to `js/constants.js`)
+
+```js
+export const VS_LIVES = 3, VS_LIFE_MAX = 5;
+export const VS_RAMP_RATE = 0.008, VS_RAMP_MAX = 1.9, VS_BALL_SPEED_MAX = 1150;
+export const AI_PROFILES = {   // top-paddle AI tuning
+  easy:   { speed: 420, err: 60, react: 0.35 },   // px/s, aim error px, re-aim interval s
+  normal: { speed: 560, err: 35, react: 0.22 },
+  hard:   { speed: 700, err: 18, react: 0.12 },
+};
+```
+
+### AI (engine-internal, top paddle, solo versus only)
+
+Each `react` interval, pick the nearest ball with `vy < 0` (heading top), predict its x at `PADDLE_TOP_Y` with wall-bounce reflection, add uniform aim error `±err` scaled up with ball speed; move toward the target at ≤ `speed` px/s. No threat → drift toward the nearest catchable powerup (one floating up), else toward field center. Auto-launch stuck balls after ~1 s aimed with the standard serve spread; with laser active, fire opportunistically at live bricks on cooldown. The AI must feel beatable, not psychic: it reads only ball/powerup positions (no future spawn knowledge) and its error grows with the ramp.
+
+### Wire protocol additions (host→guest unless noted)
+
+- `{t:'level', idx, mode?}` — `mode:'versus'` when starting/reloading an arena in versus (absent = co-op). `engine.resync()` includes it.
+- `{t:'state', …}` gains in versus: `lb`, `lt` (lives bottom/top), `sb`, `st` (scores), `ramp` (display only).
+- `{t:'ev', name:'lifeLost', side:'top'|'bottom'}` — side is REQUIRED in versus.
+- `{t:'phase', v:'matchend', winner:'bottom'|'top'}` — terminal for the match.
+- guest→host `{t:'input', x, fire, launch}` — `launch` added (guest serves its own ball in versus).
+
+### API additions
+
+```js
+engine.startVersusAI(difficulty /* 'easy'|'normal'|'hard' */, levelIdx?)   // levelIdx default: random
+engine.startVersusHost(levelIdx?)                                          // MP versus, host side
+// guest side: startGuest() unchanged — mode arrives via {t:'level', mode:'versus'}
+engine.setCallbacks({ …, onMatchEnd })   // onMatchEnd({ winner, youWon, scoreBottom, scoreTop, timeMs })
+                                         // youWon: from the local side's perspective (guest = top)
+ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch })
+  // reuses #dlg-level-end: title 'You win! 🏆' / 'You lose', per-side stats,
+  // #btn-le-next relabeled 'Rematch' (hidden when !canRematch — MP guest sees
+  // "the host picks" convention), #btn-le-replay hidden, #btn-le-menu = Menu.
+// new ui actions: 'versus-ai' {difficulty}, 'versus-mp', 'rematch'
+```
+
+`main.js`: `'versus-ai'` → `engine.startVersusAI(difficulty)`; `'versus-mp'` → if `net.role === 'host'` start `engine.startVersusHost()` else toast + open the multiplayer dialog; `'rematch'` → restart the same versus config (host relays to guest via the normal start messages). Match end goes through `leaveGame()`-style cleanup only when leaving to menu; rematch keeps the net session.
+
+### DOM additions (`index.html` — already updated; do not rename ids)
+
+Menu button `#btn-versus` opens `#dlg-versus`: a "vs Computer" section (difficulty `<select id="vs-difficulty">` easy/normal/hard + `#btn-vs-ai` start) and a "vs Friend" section (`#btn-vs-friend`: when MP-connected as host it starts the online match, otherwise it opens `#dlg-multiplayer` to connect first; ui.js relabels it accordingly, id stays).

@@ -21,12 +21,13 @@
     <p class="tagline">Your paddles are portals. Don't drop the ball — on either side.</p>
     <nav class="menu-buttons" aria-label="Main">
       <button id="btn-play" class="btn btn-primary" type="button">Play</button>
+      <button id="btn-versus" class="btn btn-tonal" type="button" commandfor="dlg-versus" command="show-modal">Versus</button>
       <button id="btn-levels" class="btn btn-tonal" type="button">Levels</button>
       <button id="btn-multiplayer" class="btn btn-tonal" type="button" commandfor="dlg-multiplayer" command="show-modal">Play with a friend</button>
       <button id="btn-options" class="btn btn-tonal" type="button" commandfor="dlg-options" command="show-modal">Options</button>
       <button id="btn-how" class="btn btn-text" type="button" commandfor="dlg-how" command="show-modal">How to play</button>
     </nav>
-    <p class="menu-footer">v1.0 — <a href="https://github.com/lp177/PortalBreakout" rel="noopener" target="_blank">source</a></p>
+    <p class="menu-footer">v1.1 — <a href="https://github.com/lp177/PortalBreakout" rel="noopener" target="_blank">source</a></p>
   </main>
 
   <!-- ============ LEVEL SELECT ============ -->
@@ -167,6 +168,35 @@
 </dialog>
 
 <!-- ============ CONFIRM QUIT ============ -->
+<!-- ============ VERSUS ============ -->
+<dialog id="dlg-versus" aria-labelledby="dlg-vs-title">
+  <h2 id="dlg-vs-title">Versus</h2>
+  <p class="hint">One portal each. Miss a ball on your side, lose a life — 3 lives, last one standing wins. The ball keeps getting faster, so no camping.</p>
+
+  <section class="mp-section" aria-labelledby="vs-ai-title">
+    <h3 id="vs-ai-title">vs Computer</h3>
+    <div class="field-row">
+      <label for="vs-difficulty">Difficulty</label>
+      <select id="vs-difficulty">
+        <option value="easy">Easy</option>
+        <option value="normal" selected>Normal</option>
+        <option value="hard">Hard</option>
+      </select>
+    </div>
+    <button id="btn-vs-ai" class="btn btn-primary" type="button">Start match</button>
+  </section>
+
+  <section class="mp-section" aria-labelledby="vs-friend-title">
+    <h3 id="vs-friend-title">vs Friend</h3>
+    <p class="hint" id="vs-friend-hint">You take the <span class="c-orange">orange</span> portal, your friend the <span class="c-blue">blue</span> one.</p>
+    <button id="btn-vs-friend" class="btn btn-tonal" type="button">Connect with a friend first</button>
+  </section>
+
+  <div class="dialog-actions">
+    <button class="btn btn-text" type="button" commandfor="dlg-versus" command="close">Close</button>
+  </div>
+</dialog>
+
 <dialog id="dlg-confirm-quit" aria-labelledby="cq-title">
   <h2 id="cq-title">Quit this game?</h2>
   <p>Your progress in this level will be lost.</p>

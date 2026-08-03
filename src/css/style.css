@@ -449,7 +449,8 @@ dialog::backdrop {
 
 #dlg-options,
 #dlg-multiplayer,
-#dlg-how { width: min(92vw, 560px); }
+#dlg-how,
+#dlg-versus { width: min(92vw, 560px); }
 
 #dlg-pause,
 #dlg-level-end,
