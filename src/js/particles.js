@@ -19,7 +19,9 @@ const K_SWIRL = 7;     // portal swirl dot orbiting the flash center
 const K_CONFETTI = 8;  // level-clear paper piece
 
 const CAP_FULL = 600, CAP_REDUCED = 120, TEXT_MAX = 24;
-const TRAUMA_DECAY = 1.6, SHAKE_PX = 14;
+// SHAKE_AMP is in FIELD units (like every coordinate here): the engine applies
+// shakeOffset() inside the world transform, so it scales with the canvas.
+const TRAUMA_DECAY = 1.6, SHAKE_AMP = 14;
 const PORTAL_ORANGE = '#ff9800', PORTAL_BLUE = '#40c4ff';
 const SWIRL_ASPECT = 0.4;   // portal swirl/ellipse squash (paddles are wide & thin)
 const CONFETTI_COLORS = ['#ef5350', '#ff9800', '#ffeb3b', '#66bb6a', '#26c6da', '#42a5f5', '#ab47bc', '#ec407a'];
@@ -314,13 +316,15 @@ export const fx = {
     drawTexts(ctx);
   },
 
+  // Returns the current screen-shake displacement in FIELD units; the engine
+  // adds it to the world transform before drawing.
   shakeOffset() {
     if (reduced || trauma <= 0) {
       shakeVec.x = 0; shakeVec.y = 0;
       return shakeVec;
     }
     // Smooth "perlin-ish" noise: incommensurate sine pairs per axis
-    const a = trauma * trauma * SHAKE_PX;
+    const a = trauma * trauma * SHAKE_AMP;
     shakeVec.x = a * (Math.sin(time * 91.7) * 0.55 + Math.sin(time * 47.3 + 1.7) * 0.45);
     shakeVec.y = a * (Math.sin(time * 83.1 + 2.6) * 0.55 + Math.sin(time * 59.9 + 4.1) * 0.45);
     return shakeVec;

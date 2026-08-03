@@ -32,7 +32,21 @@ const dialogOpen = () => Boolean(document.querySelector('dialog[open]'));
 
 const onKeyDown = (e) => {
   if (captureHandler) return;                      // rebind capture owns the keyboard
-  if (isFormTarget(e.target) || dialogOpen()) return;
+  if (isFormTarget(e.target)) return;
+  if (dialogOpen()) {
+    // The pause key still toggles while the PAUSE dialog is itself open, so Esc
+    // resumes consistently everywhere. preventDefault() suppresses the dialog's
+    // native Esc-cancel, keeping a single resume path in every browser
+    // (dlg-pause has closedby="none", honored only in newer Chrome). The
+    // confirm-quit dialog stacks above pause and keeps its native Esc-close.
+    if (!e.repeat && e.code === binds.pause
+        && document.getElementById('dlg-pause')?.open
+        && !document.getElementById('dlg-confirm-quit')?.open) {
+      e.preventDefault();
+      pauseEdge = true;
+    }
+    return;
+  }
   if (!boundCodes.has(e.code)) return;
   e.preventDefault();                              // stop Space/arrow scrolling etc.
   if (!e.repeat) {
@@ -162,6 +176,15 @@ export const input = {
       cb(e.code === 'Escape' ? null : e.code);
     };
     window.addEventListener('keydown', captureHandler, true);
+  },
+
+  // Documented extra (ui.js): disarm a pending captureNext without waiting for
+  // a keystroke — otherwise closing the options dialog mid-rebind leaves the
+  // one-shot listener armed and it silently eats the next keypress.
+  cancelCapture() {
+    if (!captureHandler) return;
+    window.removeEventListener('keydown', captureHandler, true);
+    captureHandler = null;
   },
 
   reset() {

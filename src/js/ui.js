@@ -2,7 +2,7 @@
 // See CONTRACT.md ("js/ui.js"). No DOM access happens until init() is called.
 
 import { LEVELS } from './levels.js';
-import { loadSettings, saveSettings, loadProgress, isUnlocked } from './storage.js';
+import { loadSettings, saveSettings, loadProgress, isUnlocked, DEFAULT_SETTINGS } from './storage.js';
 import { audio } from './audio.js';
 import { input } from './input.js';
 
@@ -47,6 +47,8 @@ let initialized = false;
 
 // pause dialog: closing without an explicit choice means "resume"
 let pauseChoiceMade = false;
+// connection-lost pause on the guest: "Resume" must NOT close the dialog
+let pauseNetHold = false;
 
 // multiplayer dialog state
 let hosting = false;
@@ -66,11 +68,23 @@ const runToastQueue = () => {
   toastBusy = true;
   const el = $('toast');
   el.textContent = toastQueue.shift();
+  // top layer via the Popover API where available, so toasts stay readable
+  // above open modal dialogs and their dimmed/blurred ::backdrop
+  if (typeof el.showPopover === 'function') {
+    try { el.showPopover(); } catch { /* already open */ }
+    void el.offsetWidth; // reflow so the opacity transition still runs
+  }
   el.classList.add('show');
   setTimeout(() => {
     el.classList.remove('show');
     // let the fade-out finish before showing the next queued toast
-    setTimeout(() => { toastBusy = false; runToastQueue(); }, 260);
+    setTimeout(() => {
+      if (typeof el.hidePopover === 'function') {
+        try { el.hidePopover(); } catch { /* not open */ }
+      }
+      toastBusy = false;
+      runToastQueue();
+    }, 260);
   }, 2200);
 };
 
@@ -178,9 +192,20 @@ const wireOptionsForm = () => {
   // re-sync the form from storage each time the dialog is opened
   $('btn-options').addEventListener('click', syncOptionsForm);
 
-  // if the dialog closes mid-rebind, drop the pending capture result
+  // reset all key binds to the shipped defaults
+  $('btn-binds-reset').addEventListener('click', () => {
+    input.cancelCapture();
+    listening = null;
+    const merged = pushSettings({ binds: { ...DEFAULT_SETTINGS.binds } });
+    buildBindsList(merged.binds);
+    api.toast('Controls reset to defaults');
+  });
+
+  // if the dialog closes mid-rebind, disarm the capture (or it silently
+  // swallows the next keystroke anywhere in the app) and drop the result
   $('dlg-options').addEventListener('close', () => {
     if (listening) {
+      input.cancelCapture();
       listening = null;
       buildBindsList();
     }
@@ -202,6 +227,7 @@ const buildBindsList = (binds = loadSettings().binds) => {
     const key = document.createElement('button');
     key.type = 'button';
     key.className = 'bind-key';
+    key.id = `bind-key-${action}`;
     key.textContent = prettyKey(binds[action]);
     key.setAttribute('aria-label', `${label}: ${prettyKey(binds[action])}. Press to rebind.`);
     key.addEventListener('click', () => startRebind(action, key));
@@ -229,6 +255,7 @@ const finishRebind = (action, code) => {
   listening = null;
   if (code === null) {          // Escape → cancelled
     buildBindsList();
+    $(`bind-key-${action}`)?.focus(); // rebuild destroyed the focused button
     return;
   }
   const binds = { ...loadSettings().binds };
@@ -238,6 +265,7 @@ const finishRebind = (action, code) => {
   binds[action] = code;
   const merged = pushSettings({ binds });
   buildBindsList(merged.binds);
+  $(`bind-key-${action}`)?.focus();  // keep keyboard users on the row they rebound
   if (conflict) api.toast(`Swapped with ${BIND_LABELS[conflict]}`);
 };
 
@@ -262,7 +290,6 @@ const buildLevelGrid = () => {
 
     const tile = document.createElement('button');
     tile.type = 'button';
-    tile.setAttribute('role', 'listitem');
     tile.className = `level-tile${done ? ' done' : ''}${unlocked ? '' : ' locked'}`;
     tile.disabled = !unlocked;
     tile.append(tileSpan('tile-num', String(idx + 1)), tileSpan('tile-name', level.name));
@@ -356,6 +383,12 @@ const wireGameDialogs = () => {
   const dlgConfirm = $('dlg-confirm-quit');
 
   $('btn-resume').addEventListener('click', () => {
+    if (pauseNetHold) {
+      // guest with a lost connection: stay on the dialog instead of stranding
+      // the player on a frozen, dialog-less game
+      api.toast('Waiting for the host to come back…');
+      return;
+    }
     pauseChoiceMade = true;
     closeDialog(dlgPause);
     emit('resume');
@@ -455,30 +488,41 @@ export const ui = {
   },
 
   showLevelEnd({ cleared, score, best, levelIdx, isLast }) {
+    const finale = cleared && isLast;
     $('le-title').textContent = !cleared
       ? 'Game over'
-      : isLast ? `You beat all ${LEVELS.length} levels!` : 'Level clear!';
+      : finale ? `You beat all ${LEVELS.length} levels!` : 'Level clear!';
 
     const stats = $('le-stats');
     stats.textContent = '';
     const levelName = LEVELS[levelIdx]?.name ?? `Level ${levelIdx + 1}`;
-    const isNewBest = score > 0 && score >= best;
+    const isNewBest = score > 0 && score > best; // strictly better — a tie is not a new best
     statRow(stats, 'Level', `${levelIdx + 1} — ${levelName}`);
     statRow(stats, 'Score', score.toLocaleString());
     statRow(stats, 'Best', Math.max(best, score).toLocaleString(),
       isNewBest ? 'NEW BEST!' : null);
 
-    $('btn-le-next').hidden = !cleared || isLast;
+    // the finale keeps the primary button as a celebratory "Finish" → menu
+    const next = $('btn-le-next');
+    next.hidden = !cleared;
+    next.textContent = finale ? 'Finish' : 'Next level';
     openDialog($('dlg-level-end'));
   },
 
-  showPause() {
+  showPause(info = {}) {
     pauseChoiceMade = false;
+    const lost = info.reason === 'net';
+    pauseNetHold = lost && info.role !== 'host';
+    $('dlg-pause-title').textContent = lost ? 'Connection lost' : 'Paused';
+    $('btn-resume').textContent = lost
+      ? (info.role === 'host' ? 'Continue solo' : 'Keep waiting')
+      : 'Resume';
     openDialog($('dlg-pause'));
   },
 
   hidePause() {
     pauseChoiceMade = true; // programmatic close must not re-emit 'resume'
+    pauseNetHold = false;
     closeDialog($('dlg-pause'));
   },
 

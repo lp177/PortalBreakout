@@ -34,8 +34,21 @@ const startGame = (levelIdx) => {
   currentLevelIdx = levelIdx;
   showScreen('game');
   setMusic('game');
-  if (net.connected && net.role === 'host') engine.startHost(levelIdx);
+  // gate on session existence (net.role), not net.connected: during a transient
+  // 'lost' the session is still alive and must stay the multiplayer game
+  if (net.role === 'host') engine.startHost(levelIdx);
   else engine.startSolo(levelIdx);
+};
+
+// End the current game AND the net session (if any). lastRole/netLost are
+// cleared BEFORE net.close() because close() synchronously emits 'closed' into
+// netCb — otherwise our own deliberate quit is misread as "the peer left".
+const leaveGame = () => {
+  engine.quit();
+  lastRole = null;
+  netLost = false;
+  goToMenu();
+  if (net.role) net.close();
 };
 
 const netCb = (event) => {
@@ -56,6 +69,7 @@ const netCb = (event) => {
       ui.netStatus('connected');
       document.getElementById('dlg-multiplayer')?.close?.();
       ui.toast('Friend connected! Pick a level to start.');
+      engine.resync(); // no-op unless a hosted game is already running
       break;
     case 'data':
       engine.onNetMessage(event.msg);
@@ -72,6 +86,7 @@ const netCb = (event) => {
       netLost = false;
       ui.netStatus('connected');
       engine.resume();
+      engine.resync(); // heal a guest that reloaded / missed messages while lost
       ui.toast('Friend is back!');
       break;
     case 'closed':
@@ -101,7 +116,7 @@ const onAction = (name, data = {}) => {
   switch (name) {
     case 'play':
     case 'replay':
-      if (net.connected && net.role === 'guest') {
+      if (net.role === 'guest') {
         ui.toast('The host picks the level.');
         break;
       }
@@ -131,47 +146,43 @@ const onAction = (name, data = {}) => {
     case 'resume':
       if (netLost) {
         if (lastRole === 'host') {
+          // reset flags BEFORE close(): 'closed' is emitted synchronously
+          netLost = false;
+          lastRole = null;
           net.close();
           engine.convertToSolo();
           engine.resume();
-          netLost = false;
           ui.netStatus('idle');
           ui.toast('Continuing solo.');
         } else {
           ui.toast('Waiting for the host to come back…');
+          ui.showPause({ reason: 'net', role: 'guest' }); // keep the lost dialog up
         }
         break;
       }
       engine.resume();
       break;
     case 'retry':
-      if (net.connected && net.role === 'guest') {
+      if (net.role === 'guest') {
         ui.toast('The host picks what happens next.');
         break;
       }
       engine.retryLevel();
       break;
     case 'next-level':
-      if (net.connected && net.role === 'guest') {
+      if (net.role === 'guest') {
         ui.toast('The host picks what happens next.');
         break;
       }
       if (currentLevelIdx === LEVELS.length - 1) {
-        engine.quit();
-        audio.sfx('win');
-        goToMenu();
-        ui.toast('You beat every level — incredible!');
+        leaveGame(); // finale: win fanfare already played on the level-end dialog
       } else {
         currentLevelIdx++;
         engine.nextLevel();
       }
       break;
     case 'quit-to-menu':
-      engine.quit();
-      if (net.connected) net.close();
-      lastRole = null;
-      netLost = false;
-      goToMenu();
+      leaveGame();
       break;
     case 'options-changed':
       settings = data.settings;
@@ -202,18 +213,35 @@ const init = () => {
         recordLevelResult(levelIdx, { score, timeMs, completed: cleared });
         ui.refreshLevelGrid();
       }
-      ui.showLevelEnd({ cleared, score, best, levelIdx, isLast: levelIdx === LEVELS.length - 1 });
+      const isLast = levelIdx === LEVELS.length - 1;
+      ui.showLevelEnd({ cleared, score, best, levelIdx, isLast });
+      if (cleared && isLast) {
+        // beating the final level gets its own payoff, on the dialog itself
+        audio.sfx('win');
+        fx.confetti();
+        ui.toast('You beat every level — incredible!');
+      }
     },
     onGameOver() {
       // level-end dialog (cleared:false) covers the UX; nothing extra needed
     },
-    onPauseChange(paused) {
-      if (paused) ui.showPause();
+    onPauseChange(paused, reason) {
+      if (paused) ui.showPause({ reason, role: lastRole ?? net.role });
       else ui.hidePause();
     },
+    onLevelStart() {
+      // guest: the host advanced/restarted — drop any leftover level-end dialog
+      document.getElementById('dlg-level-end')?.close?.();
+    },
     onRemoteQuit() {
-      // guest: host went back to the menu
+      // guest: host went back to the menu — end our session too, or its zombie
+      // heartbeat/repair loop reaches into the next (solo) game for 30 s
+      ui.hidePause();
+      document.getElementById('dlg-level-end')?.close?.();
       goToMenu();
+      lastRole = null;
+      netLost = false;
+      if (net.role) net.close();
       ui.toast('Host returned to the menu.');
     },
   });

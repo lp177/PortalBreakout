@@ -225,7 +225,9 @@ const resume = () => {
   if (phase !== 'paused') return;
   phase = pausedFrom ?? 'playing';
   pausedFrom = null; pauseReason = null;
-  resumeT = 0.8; // mini-countdown before physics restarts
+  // mini-grace before physics restarts; the countdown IS the grace period, so
+  // resuming into it must not stack "Ready…" on top of the countdown digit
+  resumeT = phase === 'countdown' ? 0 : 0.8;
   callbacks.onPauseChange?.(false);
   hostSend({ t: 'phase', v: 'resumed' });
 };
@@ -270,8 +272,11 @@ const frame = (ts) => {
 
   // edge-triggered pause toggles for every mode
   if (inp.pause) {
-    if (phase === 'paused') resume();
-    else pause('user');
+    if (phase === 'paused') {
+      if (pauseReason !== 'net') resume(); // lost-connection flow is owned by main.js
+    } else {
+      pause('user');
+    }
   }
 
   if (slowmoT > 0) {
@@ -585,11 +590,12 @@ const hitBrick = (brick, dmg) => {
   }
   brick.alive = false;
   destructibleLeft--;
-  score += Math.round(info.points * (1 + combo * 0.1));
+  const pts = Math.round(info.points * (1 + combo * 0.1)); // combo-multiplied award
+  score += pts;
   combo++;
   audio.sfx('brick', { combo });
   fx.brickBurst(cx, cy, info.color);
-  fx.floatText(cx, cy, `+${info.points}`, info.color);
+  fx.floatText(cx, cy, `+${pts}`, info.color);
   hostSend({ t: 'brick', idx: brickIndex(brick), hp: 0 });
   if (brick.type === 'E') explode(brick);
   maybeDrop(brick, cx, cy);
@@ -656,16 +662,20 @@ const applyPowerup = (kind, x, y) => {
   hostEv('powerup', x, y, kind);
   switch (kind) {
     case 'multi': {
-      const src = balls.filter((b) => !b.stuck);
+      const src = balls.slice();
       for (const b of src) {
+        // sticky-held balls still split: clones launch straight out of their paddle
+        const sp = b.speed || BALL_SPEED;
+        const bvx = b.stuck ? 0 : b.vx;
+        const bvy = b.stuck ? (b.stuckTo === 'top' ? sp : -sp) : b.vy;
         for (const ang of [-25 * Math.PI / 180, 25 * Math.PI / 180]) {
           if (balls.length >= MAX_BALLS) break;
           const cos = Math.cos(ang), sin = Math.sin(ang);
           balls.push({
             ...b, stuck: false,
-            vx: b.vx * cos - b.vy * sin,
-            vy: b.vx * sin + b.vy * cos,
-            portalCd: b.portalCd,
+            vx: bvx * cos - bvy * sin,
+            vy: bvx * sin + bvy * cos,
+            portalCd: b.stuck ? 0.08 : b.portalCd,
           });
         }
       }
@@ -732,6 +742,9 @@ const moveLasers = (dt) => {
 };
 
 const loseLife = () => {
+  // level already won (slow-mo clear in progress) — don't punish the falling ball
+  if (clearPending || phase === 'levelclear') return;
+  delayed = []; // pending explosive chains die with the ball
   lives--;
   combo = 0;
   audio.sfx('lifeLost');
@@ -773,6 +786,29 @@ const finishClear = () => {
   callbacks.onLevelEnd?.({ levelIdx, score, timeMs: Math.round(elapsed * 1000), cleared: true });
 };
 
+// Host-only, beyond the contract list (documented): after a guest (re)connects
+// mid-game, re-send level + brick state + phase so the guest never plays against
+// a stale or empty field. main.js calls this on 'peer-joined'/'reconnected'.
+const resync = () => {
+  if (mode !== 'host' || !running || !net.connected) return;
+  const diff = [];
+  bricks.forEach((b, i) => {
+    if (!b) return;
+    if (!b.alive) diff.push([i, 0]);
+    else if (b.hp !== Infinity && b.hp !== BRICK_TYPES[b.type].hp) diff.push([i, b.hp]);
+  });
+  hostSend({ t: 'level', idx: levelIdx, diff });
+  if (phase === 'playing' || phase === 'serve') {
+    hostSend({ t: 'phase', v: 'playing' });
+  } else if (phase === 'paused') {
+    if (pausedFrom !== 'countdown') hostSend({ t: 'phase', v: 'playing' });
+    hostSend({ t: 'phase', v: 'paused' });
+  } else if (phase === 'levelclear' || phase === 'gameover') {
+    hostSend({ t: 'phase', v: phase });
+  }
+  // 'countdown': the 'level' message already restarts the guest's countdown
+};
+
 // ---- multiplayer: guest side ----
 const guestFrame = (dt, inp) => {
   if (phase === 'countdown') tickCountdown(dt);
@@ -790,7 +826,7 @@ const guestFrame = (dt, inp) => {
   guestPadX = fake.x;
   pad.x = guestPadX; // client-side prediction of own paddle only
 
-  for (const k of ['expand', 'fire']) {
+  for (const k of ['expand', 'slow', 'laser', 'fire']) {
     if (timers[k] > 0) timers[k] = Math.max(0, timers[k] - dt);
   }
 
@@ -814,7 +850,12 @@ const interpolateSnapshots = () => {
   const am = a.msg, bm = bSnap.msg;
   balls = bm.balls.map((bb, i) => {
     const ab = am.balls[i] ?? bb;
-    return { x: lerp(ab[0], bb[0]), y: lerp(ab[1], bb[1]), stuck: false, fire: timers.fire > 0 };
+    // vy sign derived from the snapshot delta so the orange=falling / blue=rising
+    // color cue works on the guest too (magnitude is irrelevant to rendering)
+    return {
+      x: lerp(ab[0], bb[0]), y: lerp(ab[1], bb[1]), vy: bb[1] - ab[1],
+      stuck: false, fire: timers.fire > 0,
+    };
   });
   paddles.bottom.x = lerp(am.pb, bm.pb);
   lasers = bm.lasers.map((ll, i) => {
@@ -843,13 +884,20 @@ const GUEST_EV = {
     const info = POWERUP_INFO[m.extra];
     audio.sfx('powerup');
     if (info) { fx.floatText(m.x, m.y, info.label, info.color); fx.sparks(m.x, m.y, info.color); }
+    // mirror timers locally so the guest HUD shows the same E/S/L/F/C chips
     if (m.extra === 'expand') timers.expand = 15;
     if (m.extra === 'fire') timers.fire = 8;
+    if (m.extra === 'slow') timers.slow = 10;
+    if (m.extra === 'laser') timers.laser = 10;
+    if (m.extra === 'sticky') timers.stickyCharges = Math.min(timers.stickyCharges + 3, 9);
   },
   drop: (m) => { audio.sfx('drop'); void m; },
   laser: () => audio.sfx('laser'),
   launch: () => audio.sfx('launch'),
-  stick: () => audio.sfx('stick'),
+  stick: () => {
+    audio.sfx('stick');
+    if (timers.stickyCharges > 0) timers.stickyCharges--; // host consumed one charge
+  },
   levelClear: () => { audio.sfx('levelClear'); fx.confetti(); },
   gameOver: () => audio.sfx('gameOver'),
 };
@@ -905,7 +953,17 @@ const onNetMessage = (msg) => {
       snapPrev = null; snapCur = null;
       timers = { expand: 0, slow: 0, laser: 0, fire: 0, stickyCharges: 0 };
       fx.clear();
+      // resync diff (host re-sent state after a reconnect): apply silently
+      if (Array.isArray(msg.diff)) {
+        for (const d of msg.diff) {
+          const b = bricks[d?.[0]];
+          if (!b) continue;
+          if (d[1] > 0) b.hp = d[1];
+          else b.alive = false;
+        }
+      }
       phase = 'countdown'; countdownT = COUNTDOWN_LEN; lastTick = 0;
+      callbacks.onLevelStart?.(); // host advanced — close any leftover dialog
       break;
     case 'brick': {
       const b = bricks[msg.idx];
@@ -919,7 +977,10 @@ const onNetMessage = (msg) => {
         const info = BRICK_TYPES[b.type];
         audio.sfx('brick', { combo });
         fx.brickBurst(b.x + BRICK_W / 2, b.y + BRICK_H / 2, info?.color ?? '#fff');
-        if (info?.points) fx.floatText(b.x + BRICK_W / 2, b.y + BRICK_H / 2, `+${info.points}`, info.color);
+        if (info?.points) {
+          const pts = Math.round(info.points * (1 + combo * 0.1)); // mirror host award
+          fx.floatText(b.x + BRICK_W / 2, b.y + BRICK_H / 2, `+${pts}`, info.color);
+        }
       }
       break;
     }
@@ -1184,7 +1245,9 @@ const drawOverlays = () => {
   }
 
   if (phase === 'countdown') {
-    const n = Math.max(1, Math.ceil(countdownT / 0.7));
+    // clamp both ends: 2.1/0.7 is 3.0000000000000004 in IEEE-754, so an
+    // unclamped ceil() flashes "4" on the first frame of every countdown
+    const n = Math.min(3, Math.max(1, Math.ceil(countdownT / 0.7)));
     const frac = 1 - ((countdownT % 0.7) / 0.7);
     const size = 110 + 40 * (reduced ? 0 : frac);
     centerText(String(n), FIELD_H / 2, size, 'rgba(255,255,255,0.95)', BLUE);
@@ -1198,7 +1261,7 @@ const drawOverlays = () => {
     centerText('Waiting for the host to pick a level…', FIELD_H / 2, 24, 'rgba(255,255,255,0.6)');
   }
 
-  if (resumeT > 0 && phase !== 'paused') {
+  if (resumeT > 0 && phase !== 'paused' && phase !== 'countdown') {
     centerText('Ready…', FIELD_H / 2, 48, 'rgba(255,255,255,0.85)', BLUE);
   }
 
@@ -1221,6 +1284,7 @@ export const engine = {
   resume,
   quit,
   convertToSolo, // documented extra: host reclaims top paddle ("Continue solo")
+  resync,        // documented extra: host re-sends level/brick state to a (re)joined guest
   setCallbacks,
   nextLevel,
   retryLevel,

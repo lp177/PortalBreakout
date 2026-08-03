@@ -93,9 +93,14 @@ body::after {
 .noscript {
   position: relative;
   z-index: 1;
-  padding: 3rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 1.5rem;
   text-align: center;
-  font-size: 1.1rem;
+  font-size: 1.2rem;
 }
 
 /* ============ screens ============ */
@@ -187,6 +192,10 @@ body::after {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  /* explicit content-sized rows: without this, the height-constrained grid
+     compresses its auto rows while aspect-ratio keeps tiles square → rows
+     overlap on any viewport where 50 tiles don't fit (phones/tablets) */
+  grid-auto-rows: max-content;
   gap: 12px;
   align-content: start;
   width: min(100%, 920px);
@@ -279,19 +288,8 @@ body::after {
   touch-action: none; /* input.js relies on this for pointer dragging (see CONTRACT) */
 }
 
-.pause-fab {
-  position: fixed;
-  top: calc(12px + env(safe-area-inset-top, 0px));
-  right: calc(12px + env(safe-area-inset-right, 0px));
-  z-index: 20;
-  display: none;
-  background: rgba(42, 42, 42, .85);
-  box-shadow: var(--shadow-2);
-}
-
-@media (pointer: coarse) {
-  .pause-fab { display: inline-flex; }
-}
+/* .pause-fab rules live AFTER the .btn base rules (same specificity — the
+   cascade order is load-bearing, see the buttons section) */
 
 .net-banner {
   position: fixed;
@@ -382,7 +380,24 @@ body::after {
 }
 
 .btn-icon:hover { background: rgba(255, 255, 255, .08); filter: none; }
+
+/* floating pause button (touch) — must come after .btn/.btn-icon: it overrides
+   their position/display/background at equal specificity via source order */
+.pause-fab {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  z-index: 20;
+  display: none;
+  background: rgba(42, 42, 42, .85);
+  box-shadow: var(--shadow-2);
+}
+
 .pause-fab:hover { background: rgba(60, 60, 60, .9); }
+
+@media (pointer: coarse) {
+  .pause-fab { display: inline-flex; }
+}
 
 /* ripple — span injected by ui.js at pointer coords */
 .btn .ripple,
@@ -708,12 +723,17 @@ input[type='text']::placeholder { color: rgba(255, 255, 255, .35); }
 }
 
 /* ============ toast ============ */
+/* Shown as a manual popover where supported (top layer, above modal dialogs
+   and their backdrop); inset/margin/border undo the UA popover defaults. */
 .toast {
   position: fixed;
+  inset: auto;
   left: 50%;
   bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%) translateY(12px);
   z-index: 40;
+  margin: 0;
+  border: none;
   max-width: 92vw;
   padding: 10px 20px;
   border-radius: 999px;

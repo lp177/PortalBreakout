@@ -235,9 +235,7 @@ const host = (listener) => {
   teardown(false); // silently drop any previous session
   cb = listener;
   if (typeof Peer === 'undefined') {
-    const message = 'Multiplayer requires the PeerJS library (are you offline?)';
-    emit({ type: 'error', message });
-    return Promise.reject(new Error(message));
+    return Promise.reject(new Error('Multiplayer requires the PeerJS library (are you offline?)'));
   }
   role = 'host';
   status = 'starting';
@@ -246,7 +244,8 @@ const host = (listener) => {
     const fail = (message) => {
       if (settled) return;
       settled = true;
-      emit({ type: 'error', message });
+      // no 'error' emit here: the rejection is the single failure channel
+      // (emitting too made every failure toast twice in main.js)
       teardown(false);
       reject(new Error(message));
     };
@@ -301,15 +300,11 @@ const join = (roomCode, listener) => {
   teardown(false);
   cb = listener;
   if (typeof Peer === 'undefined') {
-    const message = 'Multiplayer requires the PeerJS library (are you offline?)';
-    emit({ type: 'error', message });
-    return Promise.reject(new Error(message));
+    return Promise.reject(new Error('Multiplayer requires the PeerJS library (are you offline?)'));
   }
   const suffix = normalizeSuffix(roomCode);
   if (!suffix) {
-    const message = 'Invalid room code — expected pb- plus 5 letters/numbers';
-    emit({ type: 'error', message });
-    return Promise.reject(new Error(message));
+    return Promise.reject(new Error('Invalid room code — expected pb- plus 5 letters/numbers'));
   }
   role = 'guest';
   status = 'starting';
@@ -319,7 +314,7 @@ const join = (roomCode, listener) => {
     const fail = (message) => {
       if (settled) return;
       settled = true;
-      emit({ type: 'error', message });
+      // no 'error' emit here: the rejection is the single failure channel
       teardown(false);
       reject(new Error(message));
     };

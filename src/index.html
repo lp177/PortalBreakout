@@ -8,6 +8,7 @@
 <title>PortalBreakout</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='18' rx='22' ry='9' fill='none' stroke='%2340c4ff' stroke-width='6'/%3E%3Cellipse cx='32' cy='46' rx='22' ry='9' fill='none' stroke='%23ff9800' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/style.css">
+<noscript><style>#app { display: none; }</style></noscript>
 </head>
 <body>
 <noscript><p class="noscript">PortalBreakout needs JavaScript to run.</p></noscript>
@@ -34,7 +35,7 @@
       <button id="btn-levels-back" class="btn btn-icon" type="button" aria-label="Back to menu">←</button>
       <h2>Levels</h2>
     </header>
-    <div id="level-grid" class="level-grid" role="list"></div>
+    <div id="level-grid" class="level-grid"></div>
   </main>
 
   <!-- ============ GAME ============ -->
@@ -54,6 +55,7 @@
     <h3 id="opt-controls-title">Controls</h3>
     <p class="hint">Click a key, then press the new key. Esc cancels.</p>
     <div id="binds-list" class="binds-list"></div>
+    <button id="btn-binds-reset" class="btn btn-text" type="button">Reset controls to defaults</button>
   </section>
 
   <section aria-labelledby="opt-audio-title">
@@ -174,7 +176,7 @@
   </div>
 </dialog>
 
-<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>
 
 <script src="vendor/peerjs.min.js" defer></script>
 <script type="module" src="js/main.js"></script>
