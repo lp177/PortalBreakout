@@ -53,8 +53,9 @@ const startVersus = (config) => {
   vsConfig = config;
   showScreen('game');
   setMusic('game');      // versus keeps the normal game track
-  if (config.type === 'mp') engine.startVersusHost(config.levelIdx);  // undefined → engine picks
-  else engine.startVersusAI(config.difficulty);
+  // levelIdx undefined → the engine picks a random arena (the "Random" option)
+  if (config.type === 'mp') engine.startVersusHost(config.levelIdx);
+  else engine.startVersusAI(config.difficulty, config.levelIdx);
 };
 
 // End the current game AND the net session (if any). lastRole/netLost are
@@ -80,6 +81,7 @@ const netCb = (event) => {
         // the lobby — the host picks mode + map; the game opens on {t:'level'}
         engine.startGuest();
         ui.showLobby({ role: 'guest', connected: true });
+        audio.sfx('join');
         ui.toast('Connected! Waiting for the host…');
       }
       break;
@@ -93,6 +95,9 @@ const netCb = (event) => {
         const cfg = ui.lobbyConfig();
         net.send({ t: 'lobby', mode: cfg.mode, map: cfg.levelIdx });
       }
+      // a toast alone is easy to miss while you look elsewhere — the room is
+      // exactly where you are waiting on someone else to act
+      audio.sfx('join');
       ui.toast('Friend connected!');
       engine.resync(); // no-op unless a hosted game is already running
       break;
@@ -150,6 +155,7 @@ const netCb = (event) => {
       } else {
         ui.updateLobby({ connected: true }); // re-arm the lobby after a brief drop
       }
+      audio.sfx('join');                     // same "they're here" signal
       ui.toast('Friend is back!');
       break;
     case 'closed': {
@@ -168,7 +174,7 @@ const netCb = (event) => {
           engine.convertToSolo(); // in versus the engine hands the top portal to the AI
           engine.resume();
           if (vsConfig) {
-            vsConfig = { type: 'ai', difficulty: 'normal' }; // rematch → vs the AI
+            vsConfig = { type: 'ai', difficulty: 'normal', levelIdx: vsConfig.levelIdx }; // rematch → vs the AI, same arena
             ui.toast('Your friend left — the computer takes over.');
           } else {
             ui.toast('Your friend left — continuing solo.');
@@ -242,7 +248,7 @@ const onAction = (name, data = {}) => {
           engine.resume();
           ui.netStatus('idle');
           if (vsConfig) {
-            vsConfig = { type: 'ai', difficulty: 'normal' }; // rematch → vs the AI
+            vsConfig = { type: 'ai', difficulty: 'normal', levelIdx: vsConfig.levelIdx }; // rematch → vs the AI, same arena
             ui.toast('The computer takes over.');
           } else {
             ui.toast('Continuing solo.');
@@ -287,6 +293,13 @@ const onAction = (name, data = {}) => {
         net.send({ t: 'lobby', mode: data.mode, map: data.levelIdx });
       }
       break;
+    case 'versus-setup':
+      // vs-Computer post-match: back to the setup dialog to change difficulty
+      // (or arena) rather than replaying the same match forever
+      engine.quit();
+      goToMenu();
+      ui.showVersusSetup();
+      break;
     case 'back-to-lobby': {
       // Post-game exit that KEEPS the room: both players land back in the lobby
       // so the host can pick another map and start again — no re-invite.
@@ -323,7 +336,7 @@ const onAction = (name, data = {}) => {
         net.close();
       }
       document.getElementById('dlg-versus')?.close?.();
-      startVersus({ type: 'ai', difficulty: data.difficulty ?? 'normal' });
+      startVersus({ type: 'ai', difficulty: data.difficulty ?? 'normal', levelIdx: data.levelIdx });
       break;
     case 'versus-mp':
       if (net.role === 'host' && net.connected) {
@@ -405,7 +418,11 @@ const init = () => {
       if (youWon) audio.sfx('win'); // engine already played the loser's 'gameOver'
       const canRematch = (lastRole ?? net.role) !== 'guest'; // host + solo-vs-AI only
       if (Number.isInteger(levelIdx)) currentLevelIdx = levelIdx; // seed the lobby re-open
-      ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch, canLobby: inRoom() });
+      ui.showMatchEnd({
+        youWon, scoreYou, scoreThem, timeMs, canRematch,
+        canLobby: inRoom(),
+        canSetup: !net.role && vsConfig?.type === 'ai',   // solo vs the computer
+      });
     },
     onPauseChange(paused, reason) {
       // versus flag: the lost-connection primary action is an AI takeover
@@ -470,7 +487,7 @@ const init = () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game
   });
 
-  window.__pb = { engine, ui, net, version: '1.3.0' };
+  window.__pb = { engine, ui, net, audio, version: '1.3.1' };
 };
 
 if (document.readyState === 'loading') {

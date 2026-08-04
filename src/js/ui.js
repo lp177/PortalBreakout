@@ -417,8 +417,20 @@ const updateVersusFriendBtn = () => {
 const wireVersus = () => {
   vsFriendHintDefault = [...$('vs-friend-hint').childNodes];
 
+  buildMapSelect($('vs-map'), { random: true });
+  $('vs-map').addEventListener('change', showVersusPreview);
+  // the dialog opens through a native invoker (commandfor), so paint on the
+  // opening click — after layout, or the canvas has no width to size from
+  $('btn-versus')?.addEventListener('click', () => requestAnimationFrame(showVersusPreview));
+  showVersusPreview();
+
   $('btn-vs-ai').addEventListener('click', () => {
-    emit('versus-ai', { difficulty: $('vs-difficulty').value });
+    const map = $('vs-map').value;
+    emit('versus-ai', {
+      difficulty: $('vs-difficulty').value,
+      // 'random' → undefined: the engine picks a fresh arena, as it always did
+      levelIdx: map === 'random' ? undefined : Number(map),
+    });
     closeDialog($('dlg-versus'));
   });
 
@@ -505,33 +517,56 @@ const renderLevelThumb = (canvas, levelIdx) => {
   c.strokeRect(0.5, 0.5, cssW - 1, cssH - 1);
 };
 
-// keep the preview (and its caption) in sync with a chosen map
-const showLobbyPreview = (levelIdx) => {
-  const canvas = $('lobby-preview-canvas');
-  const name = $('lobby-preview-name');
-  const idx = Number.isInteger(levelIdx) ? levelIdx : Number(levelIdx);
-  const level = LEVELS[idx];
-  if (!canvas || !level) return;
-  lobbyPreviewIdx = idx;
-  renderLevelThumb(canvas, idx);
-  if (name) name.textContent = `${String(idx + 1).padStart(2, '0')} · ${level.name}`;
-};
+const mapLabel = (idx) => `${String(idx + 1).padStart(2, '0')} · ${LEVELS[idx].name}`;
 
-// ---------- lobby dialog (v1.2) ----------
-// build the map <select> once from LEVELS: "NN · name"
-const buildLobbyMap = () => {
-  const sel = $('lobby-map');
-  if (sel.childElementCount === LEVELS.length) return; // already populated
+// Fill a map <select> from LEVELS. `random` prepends a "Random arena" option
+// (value 'random') — the vs-Computer default, which is what that mode did
+// implicitly before it had a picker.
+const buildMapSelect = (sel, { random = false } = {}) => {
+  const want = LEVELS.length + (random ? 1 : 0);
+  if (!sel || sel.childElementCount === want) return;   // already populated
   sel.textContent = '';
   const frag = document.createDocumentFragment();
-  LEVELS.forEach((level, idx) => {
+  if (random) {
+    const opt = document.createElement('option');
+    opt.value = 'random';
+    opt.textContent = 'Random arena';
+    frag.append(opt);
+  }
+  LEVELS.forEach((_, idx) => {
     const opt = document.createElement('option');
     opt.value = String(idx);
-    opt.textContent = `${String(idx + 1).padStart(2, '0')} · ${level.name}`;
+    opt.textContent = mapLabel(idx);
     frag.append(opt);
   });
   sel.append(frag);
 };
+
+// Paint a preview + caption for `value`; a non-level value (e.g. 'random')
+// hides the canvas and says so. Returns the resolved index, or null.
+// Unhides before drawing: a hidden canvas has no width to measure.
+const paintPreview = (canvasId, nameId, value) => {
+  const canvas = $(canvasId);
+  const nameEl = $(nameId);
+  const idx = Number(value);
+  const known = Number.isInteger(idx) && idx >= 0 && idx < LEVELS.length;
+  if (canvas) canvas.hidden = !known;
+  if (known && canvas) renderLevelThumb(canvas, idx);
+  if (nameEl) nameEl.textContent = known ? mapLabel(idx) : 'A random arena each match';
+  return known ? idx : null;
+};
+
+// keep the lobby preview (and its caption) in sync with a chosen map
+const showLobbyPreview = (levelIdx) => {
+  const idx = paintPreview('lobby-preview-canvas', 'lobby-preview-name', levelIdx);
+  if (idx !== null) lobbyPreviewIdx = idx;
+};
+
+const showVersusPreview = () =>
+  paintPreview('vs-preview-canvas', 'vs-preview-name', $('vs-map')?.value);
+
+// ---------- lobby dialog (v1.2) ----------
+const buildLobbyMap = () => buildMapSelect($('lobby-map'));
 
 const setPlayerChip = (el, main, sub, waiting) => {
   el.textContent = '';
@@ -676,6 +711,10 @@ const wireGameDialogs = () => {
     closeDialog(dlgLevelEnd);
     emit('back-to-lobby');
   });
+  $('btn-le-setup').addEventListener('click', () => {
+    closeDialog(dlgLevelEnd);
+    emit('versus-setup');
+  });
   $('btn-le-menu').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
     emit('quit-to-menu');
@@ -719,8 +758,11 @@ const statRow = (parent, label, value, badge = null) => {
 // Level-end exit buttons. With a live room, "Change map" returns both players
 // to the lobby (room intact) and Menu is relabelled so ending the session reads
 // as the deliberate act it is.
-const setLevelEndExit = (canLobby) => {
+// canSetup: a solo vs-Computer match — offer a trip back to the versus setup
+// (difficulty + arena) instead of only "same settings again".
+const setLevelEndExit = (canLobby, canSetup = false) => {
   $('btn-le-lobby').hidden = !canLobby;
+  $('btn-le-setup').hidden = !canSetup;
   $('btn-le-menu').textContent = canLobby ? 'Leave game' : 'Menu';
 };
 
@@ -787,9 +829,9 @@ export const ui = {
     openDialog($('dlg-level-end'));
   },
 
-  showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch, canLobby = false }) {
+  showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch, canLobby = false, canSetup = false }) {
     levelEndMode = 'match';
-    setLevelEndExit(canLobby);
+    setLevelEndExit(canLobby, canSetup);
     $('le-title').textContent = youWon ? 'You win! 🏆' : 'You lose';
 
     const stats = $('le-stats');
@@ -931,6 +973,14 @@ export const ui = {
   // the host's current lobby selection, for mirroring to a peer
   lobbyConfig() {
     return { mode: $('lobby-mode').value, levelIdx: Number($('lobby-map').value) };
+  },
+
+  // re-open the versus setup (difficulty + arena) — the selects keep the last
+  // used values, so it reads as "adjust", not "start over"
+  showVersusSetup() {
+    updateVersusFriendBtn();
+    openDialog($('dlg-versus'));
+    requestAnimationFrame(showVersusPreview);
   },
 
   hideLobby() {

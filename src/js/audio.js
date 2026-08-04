@@ -13,6 +13,11 @@ let noiseBuf = null;
 let cfg = { master: 0.8, music: 0.5, sfx: 0.9, muted: false };
 let voices = [];
 let mus = null; // active music track state
+// 0..1 musical intensity, driven by ball speed (see audio.setIntensity). Held
+// here rather than on the track so it survives a track change, and smoothed on
+// the scheduler tick so a sudden speed jump doesn't step the filter.
+let intensity = 0;
+let intensityTarget = 0;
 
 const now = () => ctx.currentTime;
 const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
@@ -147,6 +152,7 @@ const SFX_DUR = {
   portal: 0.45, brick: 0.25, silver: 0.18, gold: 0.4, explode: 0.6, wall: 0.12,
   powerup: 0.35, drop: 0.25, laser: 0.2, lifeLost: 0.85, levelClear: 0.85,
   gameOver: 1.45, click: 0.06, launch: 0.28, stick: 0.16, countdown: 0.1, win: 1.6,
+  join: 0.95,
 };
 
 const SFX = {
@@ -224,6 +230,19 @@ const SFX = {
   },
   countdown(v, t) {
     tone(v, t, { type: 'square', freq: 660, peak: 0.18, decay: 0.07, lp: 1600, attack: 0.001 });
+  },
+  // "someone stepped through the portal": a rising D–A–D call over a soft
+  // portal shimmer. Deliberately longer and warmer than the gameplay cues so
+  // it carries while you are looking at the lobby, not the canvas.
+  join(v, t) {
+    [587.33, 880, 1174.66].forEach((f, i) => {
+      tone(v, t + i * 0.1, { type: 'triangle', freq: f, peak: 0.3, decay: i === 2 ? 0.5 : 0.18, lp: 5000 });
+      tone(v, t + i * 0.1, { type: 'sine', freq: f * 2, peak: 0.08, decay: 0.12, lp: 6000 });
+    });
+    // held fifth underneath, so it reads as an arrival rather than a blip
+    tone(v, t + 0.2, { type: 'sine', freq: 293.66, peak: 0.16, decay: 0.6, attack: 0.02 });
+    tone(v, t + 0.2, { type: 'sine', freq: 440, detune: 5, peak: 0.1, decay: 0.55, attack: 0.02 });
+    hiss(v, t, { type: 'bandpass', freq: 900, freqTo: 3800, slide: 0.3, q: 2, peak: 0.1, decay: 0.35, attack: 0.01 });
   },
   win(v, t) {
     const seq = [523.25, 659.25, 783.99, 1046.5];
@@ -326,46 +345,115 @@ const GAME_PATS = [
   [0, 1, 2, 3, 4, 3, 2, 1],
 ];
 
-function setupGame(s) {
-  s.stepDur = 60 / 110 / 4; // 16th notes @ 110 BPM
-  s.lp = filt('lowpass', 2000, 0.7);
+// Alternate arpeggio shapes, so a different song doesn't just sound transposed.
+const GAME_PATS_B = [
+  [0, 3, 2, 4, 0, 2, 3, 1],
+  [4, 4, 2, 1, 3, 0, 2, 0],
+  [0, 2, 3, 2, 4, 2, 3, 4],
+  [2, 0, 3, 1, 4, 1, 3, 0],
+];
+
+// One "song" per entry: same synth vocabulary, different tempo/harmony/timbre.
+// [0] is the original game track, parameter for parameter — it's the one that
+// already works, so it stays exactly as it was and just gained company.
+const GAME_STYLES = [
+  {
+    name: 'aperture', bpm: 110, pats: GAME_PATS,
+    roots: [0, 0, 8, 10], altRoots: [0, 3, 8, 10], altChance: 0.3,
+    bassType: 'triangle', bassFreq: 110, bassPeak: 0.17, bassPeakOff: 0.13,
+    arpType: 'square', arpPeak: 0.055, arpDetune: 6, arpBase: 220,
+    lpBase: 2000, lpRange: 2400, restProb: 0.12, hiOctChance: 0.35,
+  },
+  {
+    // slower, wider, dubbier — more room between hits
+    name: 'coolant', bpm: 92, pats: GAME_PATS_B,
+    roots: [0, 0, 5, 3], altRoots: [0, 7, 5, 3], altChance: 0.35,
+    bassType: 'sine', bassFreq: 98, bassPeak: 0.2, bassPeakOff: 0.14,
+    arpType: 'triangle', arpPeak: 0.06, arpDetune: 9, arpBase: 196,
+    lpBase: 1500, lpRange: 2600, restProb: 0.24, hiOctChance: 0.3,
+  },
+  {
+    // fast and tight — the "test chamber is heating up" one
+    name: 'cascade', bpm: 128, pats: GAME_PATS,
+    roots: [0, 10, 8, 10], altRoots: [0, 10, 7, 5], altChance: 0.4,
+    bassType: 'triangle', bassFreq: 110, bassPeak: 0.16, bassPeakOff: 0.12,
+    arpType: 'sawtooth', arpPeak: 0.038, arpDetune: 4, arpBase: 220,
+    lpBase: 1700, lpRange: 3000, restProb: 0.1, hiOctChance: 0.45,
+  },
+  {
+    // brighter, hopeful lift
+    name: 'skybox', bpm: 118, pats: GAME_PATS_B,
+    roots: [0, 5, 7, 5], altRoots: [0, 5, 9, 7], altChance: 0.3,
+    bassType: 'triangle', bassFreq: 123.47, bassPeak: 0.16, bassPeakOff: 0.12,
+    arpType: 'square', arpPeak: 0.05, arpDetune: 7, arpBase: 246.94,
+    lpBase: 2200, lpRange: 2400, restProb: 0.16, hiOctChance: 0.4,
+  },
+];
+
+// avoid: don't repeat this style. force: use exactly this one (resumeSong).
+// The style must be chosen here — tempo, filter and harmony all derive from it.
+function setupGame(s, avoid = null, force = null) {
+  const pool = GAME_STYLES.filter((g) => g !== avoid);
+  s.style = force ?? (pool[(s.rng() * pool.length) | 0] ?? GAME_STYLES[0]);
+  s.stepDur = 60 / s.style.bpm / 4;      // 16th notes
+  s.lp = filt('lowpass', s.style.lpBase, 0.7);
   s.lp.connect(s.gain);
   s.nodes.push(s.lp);
-  s.roots = [0, 0, 8, 10]; // semitones from A: A A F G
-  s.arpPat = GAME_PATS[0];
+  s.roots = s.style.roots;
+  s.arpPat = s.style.pats[0];
   s.oct = 1;
   s.schedule = gameStep;
 }
 
 function gameStep(s, t) {
   const BAR = 16;
+  const st = s.style;
+  // 0..1 "how fast is the ball" — drives brightness, density and percussion
+  const I = intensity;
   if (s.step % (BAR * 4) === 0) { // evolve every 4 bars so the loop doesn't grate
-    s.arpPat = GAME_PATS[(s.rng() * GAME_PATS.length) | 0];
-    s.oct = s.rng() < 0.35 ? 2 : 1;
-    s.roots = s.rng() < 0.3 ? [0, 3, 8, 10] : [0, 0, 8, 10];
+    s.arpPat = st.pats[(s.rng() * st.pats.length) | 0];
+    s.oct = s.rng() < st.hiOctChance ? 2 : 1;
+    s.roots = s.rng() < st.altChance ? st.altRoots : st.roots;
+    // open the filter as the rally speeds up: the track gets brighter and
+    // more urgent without changing tempo (a tempo shift mid-loop wobbles)
+    s.lp.frequency.setTargetAtTime(st.lpBase + I * st.lpRange, t, 0.35);
   }
   const root = s.roots[((s.step / BAR) | 0) % 4];
   const i = s.step % BAR;
   if (i % 4 === 0) { // soft bass pulse on quarters, accent on the downbeat
     tone(s.lp, t, {
-      type: 'triangle', freq: 110 * 2 ** (root / 12),
-      peak: i === 0 ? 0.17 : 0.13, decay: 0.16, attack: 0.004,
+      type: st.bassType, freq: st.bassFreq * 2 ** (root / 12),
+      peak: (i === 0 ? st.bassPeak : st.bassPeakOff) * (0.9 + 0.25 * I),
+      decay: 0.16, attack: 0.004,
     });
   }
-  if (s.rng() > 0.12) { // driving 16th arpeggio with occasional rests
+  // driving 16th arpeggio with occasional rests — fewer rests at high speed
+  if (s.rng() > st.restProb * (1 - 0.65 * I)) {
     const deg = s.arpPat[s.step % 8];
-    const f = 220 * 2 ** ((root + PENTA[deg] + 12 * (s.oct - 1)) / 12);
+    const f = st.arpBase * 2 ** ((root + PENTA[deg] + 12 * (s.oct - 1)) / 12);
     tone(s.lp, t, {
-      type: 'square', freq: f, detune: s.step % 2 ? 6 : -6,
-      peak: 0.055, decay: 0.1, attack: 0.002,
+      type: st.arpType, freq: f, detune: s.step % 2 ? st.arpDetune : -st.arpDetune,
+      peak: st.arpPeak * (0.85 + 0.4 * I), decay: 0.1, attack: 0.002,
     });
   }
   if (i % 4 === 2) { // faint off-beat hat tick
-    hiss(s.gain, t, { type: 'highpass', freq: 7000, peak: 0.018, decay: 0.03, attack: 0.001 });
+    hiss(s.gain, t, { type: 'highpass', freq: 7000, peak: 0.018 + 0.012 * I, decay: 0.03, attack: 0.001 });
+  }
+  // extra drive that only shows up when the ball is genuinely quick
+  if (I > 0.45 && i % 4 === 1) {
+    hiss(s.gain, t, { type: 'highpass', freq: 9000, peak: 0.008 * I, decay: 0.02, attack: 0.001 });
+  }
+  if (I > 0.7 && i === 8) {   // half-bar octave ping at full tilt
+    tone(s.lp, t, {
+      type: 'triangle', freq: st.arpBase * 2 ** ((root + 12) / 12),
+      peak: 0.03 * I, decay: 0.18, attack: 0.003,
+    });
   }
 }
 
 function runScheduler(s) {
+  // ~1s time constant at TICK_MS: intensity follows the rally, not each bounce
+  intensity += (intensityTarget - intensity) * 0.1;
   const tNow = ctx.currentTime;
   if (s.nextTime < tNow - 0.05) s.nextTime = tNow + 0.02; // resync after tab throttling
   const horizon = tNow + LOOKAHEAD;
@@ -376,7 +464,7 @@ function runScheduler(s) {
   }
 }
 
-function startTrack(name) {
+function startTrack(name, avoidStyle = null, forceStyle = null) {
   const t = now();
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0.0001, t);
@@ -387,7 +475,10 @@ function startTrack(name) {
     rng: mulberry((Date.now() & 0xffff) ^ (name === 'menu' ? 0x9e37 : 0x51ab)),
   };
   if (name === 'menu') setupMenu(s);
-  else setupGame(s);
+  else {
+    setupGame(s, avoidStyle, forceStyle);
+    lastSongSwitch = ctx.currentTime;
+  }
   s.timer = setInterval(() => runScheduler(s), TICK_MS);
   runScheduler(s);
   return s;
@@ -416,7 +507,57 @@ function music(track = null) {
     stopTrack(mus);
     mus = null;
   }
+  if (name !== 'game') { intensity = 0; intensityTarget = 0; } // menu starts calm
+  songReturnTo = null;   // a pending effect-return can't outlive its track
   if (name) mus = startTrack(name);
 }
 
-export const audio = { init, applySettings, sfx, music };
+// 0..1 from the engine: how fast the fastest ball in play is, relative to its
+// speed range. Cheap enough to call every frame; only the smoothed value is used.
+function setIntensity(v) {
+  intensityTarget = clamp01(v);
+}
+
+// Cross-fade the game track to a *different* song. The engine calls this on the
+// moments that already feel like a gear change — a fireball or multiball, or the
+// rally crossing a speed threshold — so the music turns over with the action
+// instead of on a timer. Ignored off the game track, and rate-limited so a
+// flurry of pickups can't strobe through the playlist.
+const SONG_MIN_GAP = 15;   // seconds between switches
+let lastSongSwitch = -1e9;
+let songReturnTo = null;   // style to fall back to when a timed effect ends
+
+// ret: this switch belongs to an effect that will end (fireball, multiball), so
+// remember what was playing and go back to it in resumeSong().
+function nextSong({ force = false, ret = false } = {}) {
+  if (!ctx || mus?.name !== 'game') return false;
+  if (!force && ctx.currentTime - lastSongSwitch < SONG_MIN_GAP) return false;
+  const prev = mus.style;
+  stopTrack(mus);
+  mus = startTrack('game', prev);   // startTrack stamps lastSongSwitch
+  if (ret) songReturnTo = prev;     // only armed when a switch actually happened
+  return true;
+}
+
+// The effect that changed the song has worn off — drop back to the track it
+// interrupted, so the detour reads as part of the powerup rather than a
+// permanent change. Bypasses the cooldown (this IS the musical boundary).
+function resumeSong() {
+  if (!ctx || mus?.name !== 'game' || !songReturnTo) return false;
+  const back = songReturnTo;
+  songReturnTo = null;
+  if (mus.style === back) return false;
+  stopTrack(mus);
+  mus = startTrack('game', null, back);
+  return true;
+}
+
+export const audio = {
+  init, applySettings, sfx, music, setIntensity, nextSong, resumeSong,
+  // test/debug only: which song is playing and how hot it currently is
+  __debug: () => ({
+    track: mus?.name ?? null, style: mus?.style?.name ?? null,
+    intensity, intensityTarget, songs: GAME_STYLES.length,
+    returnTo: songReturnTo?.name ?? null,
+  }),
+};

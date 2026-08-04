@@ -464,7 +464,51 @@ const frame = (ts) => {
     hostFrame(dt, inp);
   }
 
+  reportIntensity();
+  effectMusicWatch();
   render();
+};
+
+// A song swapped in for a fireball or multiball hands back when the effect is
+// over: fire on its timer, multiball when the extra balls are gone. Both are
+// watched here rather than at the mutation sites because they can also end via
+// a life lost, a level change or (on a guest) a host state update.
+let wasFire = false;
+let wasMulti = false;
+
+const effectMusicWatch = () => {
+  const fireOn = timers.fire > 0;
+  const multiOn = balls.length > 1;
+  const playing = phase === 'playing' || phase === 'serve';
+  if ((wasFire && !fireOn) || (wasMulti && !multiOn && playing)) audio.resumeSong();
+  wasFire = fireOn;
+  wasMulti = multiOn;
+};
+
+// Feed the music how hot the rally is: the fastest ball in play, normalised
+// over its speed range. Balls carry vx/vy on every path (the guest's come from
+// the host's snapshots), so this works the same in solo and multiplayer.
+const INTENSITY_GEARS = [0.55, 0.82];   // upward crossings that change the song
+let lastIntensity = 0;
+
+const reportIntensity = () => {
+  let fastest = 0;
+  if (phase === 'playing' || phase === 'serve') {
+    for (const b of balls) {
+      if (b.stuck) continue;
+      const sp = Math.hypot(b.vx ?? 0, b.vy ?? 0);
+      if (sp > fastest) fastest = sp;
+    }
+  }
+  const top = gameMode === 'versus' ? VS_BALL_SPEED_MAX : BALL_SPEED_MAX;
+  const v = fastest <= 0 ? 0 : clamp((fastest - BALL_SPEED) / (top - BALL_SPEED), 0, 1);
+  audio.setIntensity(v);
+  // crossing a gear upward is a real "it just got serious" moment — let the
+  // music turn over there (audio rate-limits, so a jittery rally can't strobe)
+  for (const gear of INTENSITY_GEARS) {
+    if (lastIntensity < gear && v >= gear) audio.nextSong();
+  }
+  lastIntensity = v;
 };
 
 const hostFrame = (dt, inp) => {
@@ -968,6 +1012,10 @@ const applyPowerup = (kind, x, y, catcher = 'bottom') => {
   } else {
     hostEv('powerup', x, y, kind);
   }
+  // The two pickups that visibly change the whole board get a fresh track for
+  // as long as they last: ret:true means the music comes back when they expire
+  // (see effectMusicWatch), so the detour belongs to the powerup.
+  if (kind === 'multi' || kind === 'fire') audio.nextSong({ ret: true });
   switch (kind) {
     case 'multi': {
       const src = balls.slice();
@@ -2074,7 +2122,7 @@ export const engine = {
   // not part of the module contract). Lets harnesses compare the guest's
   // dead-reckoned ball against the host's authoritative ball.
   __debug: () => ({
-    phase, mode, gameMode,
+    phase, mode, gameMode, levelIdx, levelName,
     balls: balls.map((b) => ({ x: b.x, y: b.y, vx: b.vx, vy: b.vy })),
     pb: paddles?.bottom?.x ?? null, pt: paddles?.top?.x ?? null,
     lives, score, combo,

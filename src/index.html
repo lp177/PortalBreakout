@@ -212,6 +212,7 @@
   <div class="dialog-actions dialog-actions-stack">
     <button id="btn-le-next" class="btn btn-primary" type="button">Next level</button>
     <button id="btn-le-replay" class="btn btn-tonal" type="button">Replay</button>
+    <button id="btn-le-setup" class="btn btn-tonal" type="button" hidden>Change difficulty</button>
     <button id="btn-le-lobby" class="btn btn-tonal" type="button" hidden>Change map</button>
     <button id="btn-le-menu" class="btn btn-text" type="button">Menu</button>
   </div>
@@ -233,6 +234,14 @@
         <option value="hard">Hard</option>
       </select>
     </div>
+    <div class="field-row">
+      <label for="vs-map">Arena</label>
+      <select id="vs-map"></select>
+    </div>
+    <figure id="vs-preview" class="lobby-preview">
+      <canvas id="vs-preview-canvas" aria-hidden="true"></canvas>
+      <figcaption id="vs-preview-name" class="lobby-preview-name"></figcaption>
+    </figure>
     <button id="btn-vs-ai" class="btn btn-primary" type="button">Start match</button>
   </section>
 

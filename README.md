@@ -10,9 +10,9 @@
 - 🧱 **50 handcrafted levels** inspired by the most famous Breakout/Arkanoid layouts, plus Portal-flavored pixel art (the cake is real here).
 - 🎮 **Solo** — control both paddles at once (fully rebindable keys, mouse, or split-screen touch), with an optional assist that mirrors the top paddle.
 - 👥 **Play with a friend** — peer-to-peer via WebRTC: host a room, share a code or link, each player takes one portal. Pick your map from a lobby that previews every layout, and when a game ends **"Change map" keeps you both in the room** — choose another arena and start again, no re-invite. Disconnections pause the game and let you wait or continue solo.
-- ⚔️ **Versus mode** — duel a friend online or the built-in AI (3 difficulties). One portal each, 3 lives each: miss a ball on your side, lose a life — last one standing wins. The ball speeds up over time, so no camping; bricks stay in play as the arena and cycle to the next map when cleared, and power-ups belong to whoever catches them.
+- ⚔️ **Versus mode** — duel a friend online or the built-in AI (3 difficulties, and you pick the arena from a previewed list). One portal each, 3 lives each: miss a ball on your side, lose a life — last one standing wins. The ball speeds up over time, so no camping; bricks stay in play as the arena and cycle to the next map when cleared, and power-ups belong to whoever catches them.
 - 💥 **Game juice everywhere** — particles, screen shake, portal flashes, combos, slow-mo finishes, and seven power-ups (multiball, lasers, fireball, sticky, expand, slow, extra life).
-- 🔊 **Fully procedural audio** — every sound effect and both music loops are synthesized live with WebAudio. No assets, no downloads.
+- 🔊 **Fully procedural audio** — every sound effect and every music track is synthesized live with WebAudio. No assets, no downloads. The soundtrack picks one of four generative songs per game, brightens and tightens as the ball speeds up, and switches tracks when the run changes gear — a fireball or multiball gets its own music until the effect wears off.
 - ♿ **Accessible** — keyboard-first menus, visible focus, `prefers-reduced-motion` support, and a reduced-effects mode.
 
 ## Controls (defaults — rebind everything in Options)
