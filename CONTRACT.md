@@ -412,7 +412,19 @@ The music stays fully procedural (no assets). What changed is that it is no long
 - `pad` — sustained root/fifth/octave chord at bar start, holding the sparse songs up
 - plus `octSpread`, per-part decay and timbre
 
-The six: `aperture` (unchanged original, 110), `coolant` (84, half-time dub), `cascade` (132, relentless), `skybox` (118, bright major), `reactor` (96, phrygian shuffle), `vector` (126, lydian, 3-step arps). Measured note density spans **2.7 → 11 notes/s**, a 4× spread; the old set was near-uniform by construction. Switching, intensity and effect-scoped return are unchanged.
+The six: `aperture` (unchanged original, 110), `coolant` (106, half-time dub), `cascade` (124, relentless), `skybox` (118, bright major), `reactor` (104, sombre shuffle), `vector` (122, suspended, 3-step arps). Measured note density spans **3.5 → 10 notes/s**; the old set was near-uniform by construction. Switching, intensity and effect-scoped return are unchanged.
+
+### Consonance and tempo authority (v1.4.1)
+
+The first six-song cut used seven-note modes and sounded harsh beside the original track. Three rules now hold, and are asserted by a test that audits the exported style table:
+
+- **Every scale is a pentatonic.** Five notes, no adjacent semitones, no minor 2nd between *any* pair, no tritone — so however a pattern jumps, the notes agree. Phrygian (♭2) and lydian (♯4) are gone; `SCALES` is minorPenta / majorPenta / ritusen / suspended / manGong.
+- **No semitone root moves.** `reactor`'s old `[0, 0, 1, 8]` shifted the tonic by one semitone mid-phrase, the harshest interval available.
+- **Every bar lands on the tonic.** The step-0 arpeggio note is forced to degree 0 at octave 0, so phrases resolve instead of noodling.
+
+**Tempo authority.** Base tempos were 84–132, a 57% spread against `TEMPO_RANGE = 0.2`, so the song choice dominated tempo and returning from a fast song to a slow one read as "the music reset and ignored the ball". Tempos are now 104–124 (19%) with `TEMPO_RANGE = 0.3`: the slowest song at full intensity (135 BPM) outruns the fastest at rest (124), so **ball speed is the dominant tempo signal** and each song's identity rests on its groove instead. The intensity ratio was already preserved across a switch (verified 1.28 → 1.29 → 1.29); the perceived reset was purely this base-tempo gap.
+
+**Calming effects feed intensity too.** `reportIntensity` previously read the stored ball speed, ignoring the **slow** powerup's 0.7 factor that `moveBalls` applies — so a visibly crawling ball still drove fast music. It now mirrors that factor. **Sticky** additionally scales intensity by 0.7 while charges remain: a banked catch is a safety net, not a threat, so it should calm the music rather than push it. Measured at a fixed 700 px/s: plain 0.505, sticky 0.410, slow 0.152.
 
 **Keyboard navigation** (`wireKeyboardNav` in `ui.js`). Arrow keys move focus through the open dialog, or the active screen if none is open, so a keyboard player never has to reach for the mouse; Enter/Space activate natively.
 

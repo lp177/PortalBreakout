@@ -3,7 +3,7 @@
 
 const MAX_VOICES = 16;      // simultaneous sfx voices; oldest dropped beyond this
 const LOOKAHEAD = 0.2;      // seconds of music scheduled ahead of the context clock
-const TEMPO_RANGE = 0.2;    // up to +20% tempo at full intensity, and back down
+const TEMPO_RANGE = 0.3;    // up to +30% tempo at full intensity, and back down
 const TICK_MS = 100;        // music scheduler interval
 const XFADE = 0.5;          // music crossfade seconds
 const PENTA = [0, 3, 5, 7, 10]; // minor pentatonic, semitones
@@ -361,14 +361,18 @@ const GAME_PATS_C = [
   [2, 6, 4, 1, 5, 0, 3, 2],
 ];
 
-// Scales matter more than timbre for "is this a different song?" — four tracks
-// sharing one pentatonic all sounded like the same tune at different speeds.
+// Scales matter more than timbre for "is this a different song?" — but the
+// seven-note modes (phrygian's ♭2, lydian's tritone) put semitones and tritones
+// against the root and sounded harsh next to the original track. Every scale
+// here is a PENTATONIC: five notes, no adjacent semitones, no tritone, so any
+// two notes sound consonant together however the pattern jumps around. The
+// variety comes from their different intervals, not from risky degrees.
 const SCALES = {
-  minorPenta: [0, 3, 5, 7, 10],
-  majorPenta: [0, 2, 4, 7, 9],
-  dorian: [0, 2, 3, 5, 7, 9, 10],
-  phrygian: [0, 1, 3, 5, 7, 8, 10],
-  lydian: [0, 2, 4, 6, 7, 9, 11],
+  minorPenta: [0, 3, 5, 7, 10],   // the original — dark, neutral
+  majorPenta: [0, 2, 4, 7, 9],    // bright, open
+  ritusen: [0, 2, 5, 7, 9],       // suspended, floating
+  suspended: [0, 2, 5, 7, 10],    // airy, unresolved
+  manGong: [0, 3, 5, 8, 10],      // sombre, wide
 };
 
 // One "song" per entry: same synth vocabulary, different tempo/harmony/timbre.
@@ -391,7 +395,7 @@ const GAME_STYLES = [
   },
   {
     // half-time dub: almost no bass, quarter-note plucks, a pad holding it up
-    name: 'coolant', bpm: 84, pats: GAME_PATS_B, scale: SCALES.minorPenta,
+    name: 'coolant', bpm: 106, pats: GAME_PATS_B, scale: SCALES.minorPenta,
     roots: [0, 0, 5, 3], altRoots: [0, 7, 5, 3], altChance: 0.35,
     bassSteps: [0, 10], bassType: 'sine', bassFreq: 98,
     bassPeak: 0.24, bassPeakOff: 0.18, bassDecay: 0.42,
@@ -402,7 +406,7 @@ const GAME_STYLES = [
   },
   {
     // relentless: busy syncopated bass, 16th saws, a hat on every 8th
-    name: 'cascade', bpm: 132, pats: GAME_PATS, scale: SCALES.dorian,
+    name: 'cascade', bpm: 124, pats: GAME_PATS, scale: SCALES.ritusen,
     roots: [0, 10, 8, 10], altRoots: [0, 10, 7, 5], altChance: 0.4,
     bassSteps: [0, 3, 6, 8, 11, 14], bassType: 'triangle', bassFreq: 110,
     bassPeak: 0.15, bassPeakOff: 0.11, bassDecay: 0.11,
@@ -424,19 +428,19 @@ const GAME_STYLES = [
   },
   {
     // dark shuffle: phrygian, heavy swing, off-beat bass
-    name: 'reactor', bpm: 96, pats: GAME_PATS_C, scale: SCALES.phrygian,
-    roots: [0, 0, 1, 8], altRoots: [0, 5, 1, 8], altChance: 0.35,
+    name: 'reactor', bpm: 104, pats: GAME_PATS_C, scale: SCALES.manGong,
+    roots: [0, 3, 10, 8], altRoots: [0, 8, 3, 5], altChance: 0.35,
     bassSteps: [0, 6, 8, 14], bassType: 'sawtooth', bassFreq: 110,
     bassPeak: 0.14, bassPeakOff: 0.1, bassDecay: 0.2,
-    arpEvery: 2, arpType: 'square', arpPeak: 0.045, arpDetune: 11,
+    arpEvery: 2, arpType: 'square', arpPeak: 0.045, arpDetune: 7,
     arpBase: 220, arpDecay: 0.14, octSpread: 1,
     hatSteps: [4, 12], hatPeak: 0.02, swing: 0.3, pad: 0,
     lpBase: 1400, lpRange: 2200, restProb: 0.18, hiOctChance: 0.3,
   },
   {
     // angular: lydian, arps every 3 steps so they drift against the 4/4 bar
-    name: 'vector', bpm: 126, pats: GAME_PATS_C, scale: SCALES.lydian,
-    roots: [0, 7, 2, 9], altRoots: [0, 2, 7, 4], altChance: 0.4,
+    name: 'vector', bpm: 122, pats: GAME_PATS_C, scale: SCALES.suspended,
+    roots: [0, 5, 10, 5], altRoots: [0, 7, 5, 10], altChance: 0.4,
     bassSteps: [0, 4, 8, 12], bassType: 'sine', bassFreq: 116.54,
     bassPeak: 0.16, bassPeakOff: 0.1, bassDecay: 0.14,
     arpEvery: 3, arpType: 'triangle', arpPeak: 0.06, arpDetune: 5,
@@ -498,10 +502,14 @@ function gameStep(s, rawT) {
 
   // arpeggio at this song's own subdivision (16ths / 8ths / quarters, or every
   // 3 steps for a pattern that drifts against the bar)
-  if (s.step % st.arpEvery === 0 && s.rng() > st.restProb * (1 - 0.65 * I)) {
+  if (s.step % st.arpEvery === 0 && (i === 0 || s.rng() > st.restProb * (1 - 0.65 * I))) {
     const scale = st.scale;
-    const deg = st.pats === GAME_PATS_C ? s.arpPat[(s.step / st.arpEvery) % 8] : s.arpPat[s.step % 8];
-    const oct = st.octSpread > 1 ? (s.oct - 1) + ((s.step >> 2) % st.octSpread) : s.oct - 1;
+    // land on the tonic at the top of every bar: without an anchor the patterns
+    // wander and the track reads as noodling rather than a tune
+    const deg = i === 0 ? 0
+      : st.pats === GAME_PATS_C ? s.arpPat[(s.step / st.arpEvery) % 8] : s.arpPat[s.step % 8];
+    const oct = i === 0 ? 0
+      : st.octSpread > 1 ? (s.oct - 1) + ((s.step >> 2) % st.octSpread) : s.oct - 1;
     const f = st.arpBase * 2 ** ((root + scale[deg % scale.length] + 12 * oct) / 12);
     tone(s.lp, t, {
       type: st.arpType, freq: f, detune: s.step % 2 ? st.arpDetune : -st.arpDetune,
@@ -645,6 +653,10 @@ export const audio = {
     intensity, intensityTarget, songs: GAME_STYLES.length,
     returnTo: songReturnTo?.name ?? null,
     baseBpm: mus?.style?.bpm ?? null,
+    styles: GAME_STYLES.map((g) => ({
+      name: g.name, bpm: g.bpm, scale: g.scale, roots: g.roots, altRoots: g.altRoots,
+      arpEvery: g.arpEvery, swing: g.swing,
+    })),
     // effective tempo right now — proves the music tracks intensity both ways
     bpmNow: mus?.stepDur ? Math.round(60 / (mus.stepDur * 4)) : null,
   }),

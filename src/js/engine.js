@@ -500,7 +500,10 @@ const reportIntensity = () => {
     for (const b of balls) {
       if (b.stuck) continue;
       live++;
-      const sp = Math.hypot(b.vx ?? 0, b.vy ?? 0);
+      // the EFFECTIVE speed the player sees: the slow powerup visibly drags the
+      // ball, so the music has to follow that, not the stored speed
+      let sp = Math.hypot(b.vx ?? 0, b.vy ?? 0);
+      if (timers.slow > 0) sp = Math.max(sp * 0.7, BALL_SPEED * 0.7);
       if (sp > fastest) fastest = sp;
     }
   }
@@ -509,7 +512,10 @@ const reportIntensity = () => {
   // A crowded field is as demanding as a fast one — multiball should sound
   // urgent immediately, not only once the balls have sped up.
   const crowdI = clamp((live - 1) / 3, 0, 1);
-  const v = clamp(speedI + 0.55 * crowdI, 0, 1);
+  let v = clamp(speedI + 0.55 * crowdI, 0, 1);
+  // Sticky is a safety net, not a threat — with catches banked there is less to
+  // manage, so it should calm the music rather than drive it.
+  if (timers.stickyCharges > 0) v *= 0.7;
   audio.setIntensity(v);
   // crossing a gear upward is a real "it just got serious" moment — let the
   // music turn over there (audio rate-limits, so a jittery rally can't strobe)
@@ -2157,7 +2163,7 @@ export const engine = {
     phase, mode, gameMode, levelIdx, levelName,
     balls: balls.map((b) => ({ x: b.x, y: b.y, vx: b.vx, vy: b.vy })),
     pb: paddles?.bottom?.x ?? null, pt: paddles?.top?.x ?? null,
-    lives, score, combo,
+    lives, score, combo, timers: { ...timers },
     vsLives: { ...vsLives }, vsScores: { ...vsScores }, vsRamp,
   }),
 };
