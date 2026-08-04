@@ -18,9 +18,9 @@ let vsConfig = null;     // { type: 'ai', difficulty } | { type: 'mp', levelIdx 
 let roomCode = null;     // this host's room code — survives the connect→lobby handoff
 let pendingLobbyMode = 'coop'; // which mode the lobby opens in once a room is created (co-op vs versus entry)
 
-const setMusic = (track) => {
+const setMusic = (track, opts) => {
   currentMusic = track;
-  audio.music(track);
+  audio.music(track, opts);
 };
 
 const showScreen = (name) => {
@@ -41,7 +41,7 @@ const startGame = (levelIdx) => {
   currentLevelIdx = levelIdx;
   vsConfig = null;       // campaign game: no versus config in effect
   showScreen('game');
-  setMusic('game');
+  setMusic('game', { fresh: true });   // new game, new song
   // gate on session existence (net.role), not net.connected: during a transient
   // 'lost' the session is still alive and must stay the multiplayer game
   if (net.role === 'host') engine.startHost(levelIdx);
@@ -52,7 +52,8 @@ const startGame = (levelIdx) => {
 const startVersus = (config) => {
   vsConfig = config;
   showScreen('game');
-  setMusic('game');      // versus keeps the normal game track
+  // versus keeps the game track, but a rematch / new arena gets a new song
+  setMusic('game', { fresh: true });
   // levelIdx undefined → the engine picks a random arena (the "Random" option)
   if (config.type === 'mp') engine.startVersusHost(config.levelIdx);
   else engine.startVersusAI(config.difficulty, config.levelIdx);
@@ -298,7 +299,7 @@ const onAction = (name, data = {}) => {
       // (or arena) rather than replaying the same match forever
       engine.quit();
       goToMenu();
-      ui.showVersusSetup();
+      ui.showVersusSetup({ focus: data.focus });
       break;
     case 'back-to-lobby': {
       // Post-game exit that KEEPS the room: both players land back in the lobby

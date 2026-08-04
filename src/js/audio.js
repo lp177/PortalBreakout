@@ -3,6 +3,7 @@
 
 const MAX_VOICES = 16;      // simultaneous sfx voices; oldest dropped beyond this
 const LOOKAHEAD = 0.2;      // seconds of music scheduled ahead of the context clock
+const TEMPO_RANGE = 0.2;    // up to +20% tempo at full intensity, and back down
 const TICK_MS = 100;        // music scheduler interval
 const XFADE = 0.5;          // music crossfade seconds
 const PENTA = [0, 3, 5, 7, 10]; // minor pentatonic, semitones
@@ -395,7 +396,8 @@ const GAME_STYLES = [
 function setupGame(s, avoid = null, force = null) {
   const pool = GAME_STYLES.filter((g) => g !== avoid);
   s.style = force ?? (pool[(s.rng() * pool.length) | 0] ?? GAME_STYLES[0]);
-  s.stepDur = 60 / s.style.bpm / 4;      // 16th notes
+  s.baseStepDur = 60 / s.style.bpm / 4;  // 16th notes at the song's own tempo
+  s.stepDur = s.baseStepDur;             // scaled by intensity on every tick
   s.lp = filt('lowpass', s.style.lpBase, 0.7);
   s.lp.connect(s.gain);
   s.nodes.push(s.lp);
@@ -414,9 +416,6 @@ function gameStep(s, t) {
     s.arpPat = st.pats[(s.rng() * st.pats.length) | 0];
     s.oct = s.rng() < st.hiOctChance ? 2 : 1;
     s.roots = s.rng() < st.altChance ? st.altRoots : st.roots;
-    // open the filter as the rally speeds up: the track gets brighter and
-    // more urgent without changing tempo (a tempo shift mid-loop wobbles)
-    s.lp.frequency.setTargetAtTime(st.lpBase + I * st.lpRange, t, 0.35);
   }
   const root = s.roots[((s.step / BAR) | 0) % 4];
   const i = s.step % BAR;
@@ -455,6 +454,13 @@ function runScheduler(s) {
   // ~1s time constant at TICK_MS: intensity follows the rally, not each bounce
   intensity += (intensityTarget - intensity) * 0.1;
   const tNow = ctx.currentTime;
+  if (s.baseStepDur) {
+    // Tempo and brightness ride the smoothed intensity every tick, so the music
+    // eases back down when a rally ends or the extra balls are gone — updating
+    // these only every few bars left the track stuck at its peak.
+    s.stepDur = s.baseStepDur / (1 + TEMPO_RANGE * intensity);
+    s.lp?.frequency.setTargetAtTime(s.style.lpBase + intensity * s.style.lpRange, tNow, 0.25);
+  }
   if (s.nextTime < tNow - 0.05) s.nextTime = tNow + 0.02; // resync after tab throttling
   const horizon = tNow + LOOKAHEAD;
   while (s.nextTime < horizon) {
@@ -499,17 +505,22 @@ function stopTrack(s) {
   }, (XFADE + 0.1) * 1000);
 }
 
-function music(track = null) {
+// fresh: restart the game track on a different song even if it is already
+// playing — a rematch or a new map deserves new music, and without this the
+// track only rolls over when you pass back through the menu.
+function music(track = null, { fresh = false } = {}) {
   if (!ctx) return;
   const name = track === 'menu' || track === 'game' ? track : null;
-  if ((mus?.name ?? null) === name) return;
+  const same = (mus?.name ?? null) === name;
+  if (same && !(fresh && name === 'game')) return;
+  const avoid = same ? mus.style : null;
   if (mus) {
     stopTrack(mus);
     mus = null;
   }
   if (name !== 'game') { intensity = 0; intensityTarget = 0; } // menu starts calm
   songReturnTo = null;   // a pending effect-return can't outlive its track
-  if (name) mus = startTrack(name);
+  if (name) mus = startTrack(name, avoid);
 }
 
 // 0..1 from the engine: how fast the fastest ball in play is, relative to its
@@ -559,5 +570,8 @@ export const audio = {
     track: mus?.name ?? null, style: mus?.style?.name ?? null,
     intensity, intensityTarget, songs: GAME_STYLES.length,
     returnTo: songReturnTo?.name ?? null,
+    baseBpm: mus?.style?.bpm ?? null,
+    // effective tempo right now — proves the music tracks intensity both ways
+    bpmNow: mus?.stepDur ? Math.round(60 / (mus.stepDur * 4)) : null,
   }),
 };

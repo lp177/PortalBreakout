@@ -318,6 +318,7 @@ const loadArena = (idx, serveSide) => {
   timeScale = 1; slowmoT = 0; clearPending = false;
   buildBricks(idx);
   // no fx.clear(): the arena-clear confetti plays on into the countdown
+  audio.music('game', { fresh: true });   // new arena, new song
   sendVsLevel();
   beginCountdown();
 };
@@ -405,6 +406,7 @@ const nextLevel = () => {
   if (mode === 'guest') return;               // host drives level flow
   if (gameMode === 'versus') return;          // versus cycles arenas internally
   if (levelIdx + 1 >= LEVELS.length) return;  // main treats last level itself
+  audio.music('game', { fresh: true });       // new level, new song
   setupLevel(levelIdx + 1);
 };
 
@@ -493,15 +495,21 @@ let lastIntensity = 0;
 
 const reportIntensity = () => {
   let fastest = 0;
+  let live = 0;
   if (phase === 'playing' || phase === 'serve') {
     for (const b of balls) {
       if (b.stuck) continue;
+      live++;
       const sp = Math.hypot(b.vx ?? 0, b.vy ?? 0);
       if (sp > fastest) fastest = sp;
     }
   }
   const top = gameMode === 'versus' ? VS_BALL_SPEED_MAX : BALL_SPEED_MAX;
-  const v = fastest <= 0 ? 0 : clamp((fastest - BALL_SPEED) / (top - BALL_SPEED), 0, 1);
+  const speedI = fastest <= 0 ? 0 : clamp((fastest - BALL_SPEED) / (top - BALL_SPEED), 0, 1);
+  // A crowded field is as demanding as a fast one — multiball should sound
+  // urgent immediately, not only once the balls have sped up.
+  const crowdI = clamp((live - 1) / 3, 0, 1);
+  const v = clamp(speedI + 0.55 * crowdI, 0, 1);
   audio.setIntensity(v);
   // crossing a gear upward is a real "it just got serious" moment — let the
   // music turn over there (audio rate-limits, so a jittery rally can't strobe)
@@ -1271,6 +1279,15 @@ const triggerClear = () => {
   timeScale = reduced ? 1 : 0.25;
 };
 
+// where the "+1 LIFE" reward reads for a side, just inside its own paddle
+const clearLifeY = (side) => (side === 'top' ? PADDLE_TOP_Y + 70 : PADDLE_BOTTOM_Y - 70);
+
+const showClearLife = (side) => {
+  fx.floatText(FIELD_W / 2, clearLifeY(side), '+1 LIFE', '#ff8a9b');
+  fx.sparks(FIELD_W / 2, clearLifeY(side), '#ff8a9b');
+  audio.sfx('powerup');
+};
+
 const finishClear = () => {
   clearPending = false;
   timeScale = 1;
@@ -1278,7 +1295,13 @@ const finishClear = () => {
     // arena cycle: brief celebration, then the next map; state persists
     audio.sfx('levelClear');
     fx.confetti();
-    hostEv('levelClear');
+    // Clearing the arena is worth playing for: the side that broke the last
+    // brick banks an extra life (up to VS_LIFE_MAX) as well as serving next.
+    // The guest mirrors it from the lb/lt the level message already carries.
+    const bonus = vsLives[lastBreaker] < VS_LIFE_MAX;
+    if (bonus) vsLives[lastBreaker]++;
+    hostEv('levelClear', FIELD_W / 2, clearLifeY(lastBreaker), bonus ? lastBreaker : undefined);
+    if (bonus) showClearLife(lastBreaker);
     loadArena((levelIdx + 1) % LEVELS.length, lastBreaker);
     return;
   }
@@ -1533,7 +1556,13 @@ const GUEST_EV = {
     audio.sfx('stick');
     if (timers.stickyCharges > 0) timers.stickyCharges--; // host consumed one charge
   },
-  levelClear: () => { audio.sfx('levelClear'); fx.confetti(); },
+  levelClear: (m) => {
+    audio.sfx('levelClear');
+    fx.confetti();
+    // versus: extra carries the side that broke the last brick and earned the
+    // bonus life (lives themselves arrive with the next level message)
+    if (m.extra === 'bottom' || m.extra === 'top') showClearLife(m.extra);
+  },
   gameOver: () => audio.sfx('gameOver'),
 };
 
@@ -1664,6 +1693,9 @@ const onNetMessage = (msg) => {
         }
       }
       phase = 'countdown'; countdownT = COUNTDOWN_LEN; lastTick = 0;
+      // a new arena/level is a natural place for new music (but a reconnect
+      // resync re-sends the current level — that shouldn't restart the track)
+      if (!Array.isArray(msg.diff)) audio.music('game', { fresh: true });
       callbacks.onLevelStart?.(); // host advanced — close any leftover dialog
       break;
     }

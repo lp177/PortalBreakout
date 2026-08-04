@@ -709,11 +709,12 @@ const wireGameDialogs = () => {
   });
   $('btn-le-lobby').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
-    emit('back-to-lobby');
+    if (levelEndCanLobby) emit('back-to-lobby');
+    else emit('versus-setup', { focus: 'map' });
   });
   $('btn-le-setup').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
-    emit('versus-setup');
+    emit('versus-setup', { focus: 'difficulty' });
   });
   $('btn-le-menu').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
@@ -758,10 +759,15 @@ const statRow = (parent, label, value, badge = null) => {
 // Level-end exit buttons. With a live room, "Change map" returns both players
 // to the lobby (room intact) and Menu is relabelled so ending the session reads
 // as the deliberate act it is.
-// canSetup: a solo vs-Computer match — offer a trip back to the versus setup
-// (difficulty + arena) instead of only "same settings again".
+// "Change map" means the same thing to a player in both contexts, so it is one
+// button: with a live room it re-opens the lobby, and in a solo vs-Computer
+// match the versus setup (focused on the arena). Changing the map must not be
+// buried behind "Change difficulty" — most players only want the map.
+let levelEndCanLobby = false;
+
 const setLevelEndExit = (canLobby, canSetup = false) => {
-  $('btn-le-lobby').hidden = !canLobby;
+  levelEndCanLobby = canLobby;
+  $('btn-le-lobby').hidden = !(canLobby || canSetup);
   $('btn-le-setup').hidden = !canSetup;
   $('btn-le-menu').textContent = canLobby ? 'Leave game' : 'Menu';
 };
@@ -977,10 +983,16 @@ export const ui = {
 
   // re-open the versus setup (difficulty + arena) — the selects keep the last
   // used values, so it reads as "adjust", not "start over"
-  showVersusSetup() {
+  showVersusSetup({ focus = null } = {}) {
     updateVersusFriendBtn();
     openDialog($('dlg-versus'));
-    requestAnimationFrame(showVersusPreview);
+    requestAnimationFrame(() => {
+      showVersusPreview();
+      // land on the control the player came here to change
+      const el = focus === 'map' ? $('vs-map') : focus === 'difficulty' ? $('vs-difficulty') : null;
+      el?.focus();
+      el?.scrollIntoView({ block: 'nearest' });
+    });
   },
 
   hideLobby() {
