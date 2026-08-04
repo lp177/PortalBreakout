@@ -8,8 +8,8 @@
 <title>PortalBreakout</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='18' rx='22' ry='9' fill='none' stroke='%2340c4ff' stroke-width='6'/%3E%3Cellipse cx='32' cy='46' rx='22' ry='9' fill='none' stroke='%23ff9800' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
 <noscript><style>#app { display: none; }</style></noscript>
-  <script type="module" crossorigin src="./assets/index-B-58QJXy.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-B4XaWdMo.css">
+  <script type="module" crossorigin src="./assets/index-D2_wwnFF.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DDoQkEAU.css">
 </head>
 <body>
 <noscript><p class="noscript">PortalBreakout needs JavaScript to run.</p></noscript>
@@ -152,7 +152,7 @@
       <label for="lobby-mode">Mode</label>
       <select id="lobby-mode">
         <option value="versus">Versus — 3 lives each, last portal standing</option>
-        <option value="coop">Co-op — 3 shared lives, clear levels together</option>
+        <option value="coop">Co-op — 3 lives each, revive on level clear</option>
       </select>
     </div>
     <div class="field-row">
@@ -164,6 +164,12 @@
   <div id="lobby-guest" class="lobby-guest" hidden>
     <p class="hint" id="lobby-guest-msg">Waiting for the host to choose the map…</p>
   </div>
+
+  <!-- map preview: decorative (the map name lives in the select / guest line) -->
+  <figure id="lobby-preview" class="lobby-preview">
+    <canvas id="lobby-preview-canvas" aria-hidden="true"></canvas>
+    <figcaption id="lobby-preview-name" class="lobby-preview-name"></figcaption>
+  </figure>
 
   <p id="lobby-status" class="mp-status" role="status"></p>
 
@@ -207,6 +213,7 @@
   <div class="dialog-actions dialog-actions-stack">
     <button id="btn-le-next" class="btn btn-primary" type="button">Next level</button>
     <button id="btn-le-replay" class="btn btn-tonal" type="button">Replay</button>
+    <button id="btn-le-lobby" class="btn btn-tonal" type="button" hidden>Change map</button>
     <button id="btn-le-menu" class="btn btn-text" type="button">Menu</button>
   </div>
 </dialog>

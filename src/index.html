@@ -151,7 +151,7 @@
       <label for="lobby-mode">Mode</label>
       <select id="lobby-mode">
         <option value="versus">Versus — 3 lives each, last portal standing</option>
-        <option value="coop">Co-op — 3 shared lives, clear levels together</option>
+        <option value="coop">Co-op — 3 lives each, revive on level clear</option>
       </select>
     </div>
     <div class="field-row">
@@ -163,6 +163,12 @@
   <div id="lobby-guest" class="lobby-guest" hidden>
     <p class="hint" id="lobby-guest-msg">Waiting for the host to choose the map…</p>
   </div>
+
+  <!-- map preview: decorative (the map name lives in the select / guest line) -->
+  <figure id="lobby-preview" class="lobby-preview">
+    <canvas id="lobby-preview-canvas" aria-hidden="true"></canvas>
+    <figcaption id="lobby-preview-name" class="lobby-preview-name"></figcaption>
+  </figure>
 
   <p id="lobby-status" class="mp-status" role="status"></p>
 
@@ -206,6 +212,7 @@
   <div class="dialog-actions dialog-actions-stack">
     <button id="btn-le-next" class="btn btn-primary" type="button">Next level</button>
     <button id="btn-le-replay" class="btn btn-tonal" type="button">Replay</button>
+    <button id="btn-le-lobby" class="btn btn-tonal" type="button" hidden>Change map</button>
     <button id="btn-le-menu" class="btn btn-text" type="button">Menu</button>
   </div>
 </dialog>

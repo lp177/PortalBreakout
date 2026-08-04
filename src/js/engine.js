@@ -340,8 +340,8 @@ const startVersusHost = (levelIdx_) => {
   setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
 };
 
-const quit = () => {
-  hostSend({ t: 'phase', v: 'backtomenu' });
+// stop the loop and drop all per-game state; leaves the net session untouched
+const teardown = () => {
   running = false;
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -352,6 +352,20 @@ const quit = () => {
   gameMode = 'coop'; ai = null; vsWinner = null;
   fx.clear();
   input.reset();
+};
+
+const quit = () => {
+  hostSend({ t: 'phase', v: 'backtomenu' });
+  teardown();
+};
+
+// Post-game exit that KEEPS the room: the peers stay connected in the lobby so
+// the host can pick another map and start again without re-inviting. Differs
+// from quit() only in the phase it broadcasts ('backtolobby' → the guest
+// re-arms and waits in the lobby instead of tearing its session down).
+const quitToLobby = () => {
+  hostSend({ t: 'phase', v: 'backtolobby' });
+  teardown();
 };
 
 const pause = (reason) => {
@@ -1139,6 +1153,7 @@ const endMatch = (winner) => {
     winner, youWon,
     scoreBottom: vsScores.bottom, scoreTop: vsScores.top,
     timeMs: Math.round(matchTime * 1000),
+    levelIdx,   // lets the lobby re-open seeded with the arena just played
   });
 };
 
@@ -1507,12 +1522,20 @@ const guestPhase = (v, msg = {}) => {
         // prefer the host's authoritative clock; the local one drifts by
         // whatever serve-wait the two sides counted differently
         timeMs: typeof msg.timeMs === 'number' ? msg.timeMs : Math.round(matchTime * 1000),
+        levelIdx,
       });
       break;
     }
     case 'backtomenu':
       quit();
       callbacks.onRemoteQuit?.();
+      break;
+    // host ended the game but kept the room: re-arm as a fresh guest (loop
+    // running, phase idle) so the next {t:'level'} pulls us straight into the
+    // new match, and let main.js put us back in the lobby view
+    case 'backtolobby':
+      startGuest();
+      callbacks.onRemoteLobby?.();
       break;
   }
 };
@@ -2040,6 +2063,7 @@ export const engine = {
   pause,
   resume,
   quit,
+  quitToLobby,   // documented extra: end the game, keep the room (v1.3)
   convertToSolo, // documented extra: host reclaims top paddle ("Continue solo")
   resync,        // documented extra: host re-sends level/brick state to a (re)joined guest
   setCallbacks,

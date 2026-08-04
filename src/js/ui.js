@@ -1,7 +1,8 @@
 // PortalBreakout — ui module: menus, dialogs, ripple, level grid, rebind flow.
 // See CONTRACT.md ("js/ui.js"). No DOM access happens until init() is called.
 
-import { LEVELS } from './levels.js';
+import { LEVELS, BRICK_TYPES } from './levels.js';
+import { GRID_COLS, GRID_ROWS } from './constants.js';
 import { loadSettings, saveSettings, loadProgress, isUnlocked, DEFAULT_SETTINGS } from './storage.js';
 import { audio } from './audio.js';
 import { input } from './input.js';
@@ -65,6 +66,7 @@ let bannerTimer = 0;
 let lobbyRole = null;      // 'host' | 'guest' | null
 let lobbyConnected = false;
 let lobbyGuestName = null;
+let lobbyPreviewIdx = null; // map currently drawn in the preview (v1.3)
 
 // #vs-friend-hint default content (spans), saved at wire time so the guest
 // override can be undone without innerHTML
@@ -430,6 +432,91 @@ const wireVersus = () => {
   updateVersusFriendBtn();
 };
 
+// ---------- map preview (v1.3) ----------
+// Miniature of a level's brick layout, so picking a map isn't guesswork from
+// the name alone. Draws the grid in the real brick colors over the playfield's
+// dark background, with the two portal paddles hinted top and bottom. The
+// aspect is the grid's (13×14 cells) plus a margin row for each paddle.
+const THUMB_ROWS = GRID_ROWS + 4;         // 2 spacer rows top + bottom for the paddles
+
+const renderLevelThumb = (canvas, levelIdx) => {
+  const level = LEVELS[levelIdx];
+  if (!canvas || !level) return;
+  const cssW = canvas.clientWidth || 240;
+  const cell = cssW / GRID_COLS;
+  const cssH = Math.round(cell * THUMB_ROWS);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.height = `${cssH}px`;
+  const c = canvas.getContext('2d');
+  if (!c) return;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, cssW, cssH);
+
+  c.fillStyle = '#0b1017';
+  c.fillRect(0, 0, cssW, cssH);
+
+  // faint grid, matching the in-game field
+  c.strokeStyle = 'rgba(120,170,220,0.07)';
+  c.lineWidth = 1;
+  for (let i = 1; i < GRID_COLS; i++) {
+    c.beginPath(); c.moveTo(Math.round(i * cell) + 0.5, 0); c.lineTo(Math.round(i * cell) + 0.5, cssH); c.stroke();
+  }
+
+  const pad = Math.max(0.7, cell * 0.07);
+  const r = Math.max(1.5, cell * 0.16);
+  level.rows.forEach((row, ri) => {
+    for (let ci = 0; ci < GRID_COLS; ci++) {
+      const ch = row[ci];
+      const info = ch && ch !== '.' ? BRICK_TYPES[ch] : null;
+      if (!info) continue;
+      const x = ci * cell + pad;
+      const y = (ri + 2) * cell + pad;      // +2: the top paddle's spacer rows
+      const w = cell - pad * 2;
+      const h = cell - pad * 2;
+      c.beginPath();
+      if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h);
+      c.fillStyle = info.color;
+      c.fill();
+      // same top highlight the engine draws, so the mini reads as the real thing
+      c.beginPath();
+      const ih = h * 0.38;
+      if (c.roundRect) c.roundRect(x + pad, y + pad, w - pad * 2, ih, r * 0.6);
+      else c.rect(x + pad, y + pad, w - pad * 2, ih);
+      c.fillStyle = 'rgba(255,255,255,0.18)';
+      c.fill();
+    }
+  });
+
+  // portal paddles: orange (bottom / host) and blue (top / joiner)
+  const pw = cell * 2.2, ph = Math.max(2.5, cell * 0.34);
+  const drawPad = (cy, color) => {
+    c.beginPath();
+    if (c.roundRect) c.roundRect((cssW - pw) / 2, cy - ph / 2, pw, ph, ph / 2);
+    else c.rect((cssW - pw) / 2, cy - ph / 2, pw, ph);
+    c.fillStyle = color;
+    c.fill();
+  };
+  drawPad(cell * 0.9, '#42a5f5');
+  drawPad(cssH - cell * 0.9, '#ff9800');
+
+  c.strokeStyle = 'rgba(120,170,220,0.22)';
+  c.strokeRect(0.5, 0.5, cssW - 1, cssH - 1);
+};
+
+// keep the preview (and its caption) in sync with a chosen map
+const showLobbyPreview = (levelIdx) => {
+  const canvas = $('lobby-preview-canvas');
+  const name = $('lobby-preview-name');
+  const idx = Number.isInteger(levelIdx) ? levelIdx : Number(levelIdx);
+  const level = LEVELS[idx];
+  if (!canvas || !level) return;
+  lobbyPreviewIdx = idx;
+  renderLevelThumb(canvas, idx);
+  if (name) name.textContent = `${String(idx + 1).padStart(2, '0')} · ${level.name}`;
+};
+
 // ---------- lobby dialog (v1.2) ----------
 // build the map <select> once from LEVELS: "NN · name"
 const buildLobbyMap = () => {
@@ -515,6 +602,19 @@ const wireLobby = () => {
   $('btn-lobby-kick').addEventListener('click', () => emit('lobby-kick'));
   $('btn-lobby-leave').addEventListener('click', () => emit('lobby-leave'));
 
+  // host browsing the setup: redraw the preview and mirror the choice to the
+  // guest, so both players see the same map before the match starts
+  const broadcastConfig = () => {
+    if (lobbyRole !== 'host') return;
+    showLobbyPreview(Number($('lobby-map').value));
+    emit('lobby-config', {
+      mode: $('lobby-mode').value,
+      levelIdx: Number($('lobby-map').value),
+    });
+  };
+  $('lobby-map').addEventListener('change', broadcastConfig);
+  $('lobby-mode').addEventListener('change', broadcastConfig);
+
   // same clipboard logic + fallback as btn-mp-copy (this is the canonical surface)
   $('btn-lobby-copy').addEventListener('click', async () => {
     if (!currentRoomCode) return;
@@ -572,6 +672,10 @@ const wireGameDialogs = () => {
     closeDialog(dlgLevelEnd);
     emit('retry');
   });
+  $('btn-le-lobby').addEventListener('click', () => {
+    closeDialog(dlgLevelEnd);
+    emit('back-to-lobby');
+  });
   $('btn-le-menu').addEventListener('click', () => {
     closeDialog(dlgLevelEnd);
     emit('quit-to-menu');
@@ -612,14 +716,23 @@ const statRow = (parent, label, value, badge = null) => {
   parent.append(l, v);
 };
 
+// Level-end exit buttons. With a live room, "Change map" returns both players
+// to the lobby (room intact) and Menu is relabelled so ending the session reads
+// as the deliberate act it is.
+const setLevelEndExit = (canLobby) => {
+  $('btn-le-lobby').hidden = !canLobby;
+  $('btn-le-menu').textContent = canLobby ? 'Leave game' : 'Menu';
+};
+
 // ---------- public API ----------
 export const ui = {
   init({ onAction }) {
     // onAction(name, data) names: 'play' {levelIdx}, 'replay' {levelIdx},
     // 'host', 'join' {code}, 'options-changed' {settings}, 'pause', 'resume',
     // 'retry', 'next-level', 'quit-to-menu', 'cancel-mp',
-    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch',
-    // 'lobby-start' {mode, levelIdx}, 'lobby-kick', 'lobby-leave'
+    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch', 'back-to-lobby',
+    // 'lobby-start' {mode, levelIdx}, 'lobby-kick', 'lobby-leave',
+    // 'lobby-config' {mode, levelIdx}
     emit = (name, data) => onAction(name, data);
     if (initialized) return;
     initialized = true;
@@ -646,7 +759,10 @@ export const ui = {
     buildLevelGrid();
   },
 
-  showLevelEnd({ cleared, score, best, levelIdx, isLast }) {
+  // canLobby: a live MP room — offer "Change map" (keeps the room) and make
+  // Menu read as the deliberate way to end the session
+  showLevelEnd({ cleared, score, best, levelIdx, isLast, canLobby = false }) {
+    setLevelEndExit(canLobby);
     levelEndMode = 'level';
     const finale = cleared && isLast;
     $('le-title').textContent = !cleared
@@ -671,8 +787,9 @@ export const ui = {
     openDialog($('dlg-level-end'));
   },
 
-  showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch }) {
+  showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch, canLobby = false }) {
     levelEndMode = 'match';
+    setLevelEndExit(canLobby);
     $('le-title').textContent = youWon ? 'You win! 🏆' : 'You lose';
 
     const stats = $('le-stats');
@@ -765,7 +882,9 @@ export const ui = {
 
   // ---- lobby (v1.2) ----
   // mode (optional) seeds #lobby-mode for the host per the start context.
-  showLobby({ role, code, connected = false, mode = 'coop' }) {
+  // levelIdx (optional) seeds the map select + preview — used when the lobby
+  // re-opens after a match so it starts on the arena just played.
+  showLobby({ role, code, connected = false, mode = 'coop', levelIdx = null }) {
     // moving out of the connect dialog into the lobby: clear the mp-dialog's
     // "host is waiting to connect" flag FIRST, or closing it fires its
     // cancel-mp handler and tears down the room we just created
@@ -781,6 +900,7 @@ export const ui = {
       $('lobby-room-code').textContent = currentRoomCode ?? '';
       buildLobbyMap();
       $('lobby-mode').value = mode === 'versus' ? 'versus' : 'coop';
+      if (LEVELS[levelIdx]) $('lobby-map').value = String(levelIdx);
     } else {
       // guest carries no room code — mpRole() relies on that to tell host/guest apart
       $('lobby-guest-msg').textContent = 'Waiting for the host to choose the map…';
@@ -788,12 +908,29 @@ export const ui = {
 
     refreshLobby();
     openDialog($('dlg-lobby'));
+    // after the dialog is laid out, so clientWidth is real
+    showLobbyPreview(role === 'host' ? Number($('lobby-map').value) : (levelIdx ?? lobbyPreviewIdx ?? 0));
   },
 
-  updateLobby({ connected, guestName } = {}) {
+  // mode/levelIdx arrive from the host's live lobby choices (guest side).
+  // levelIdx is peer-supplied: coerce to a real array index or ignore it.
+  updateLobby({ connected, guestName, mode, levelIdx } = {}) {
     if (typeof connected === 'boolean') lobbyConnected = connected;
     if (guestName != null) lobbyGuestName = guestName;
+    const idx = Number(levelIdx);
+    if (Number.isInteger(idx) && idx >= 0 && idx < LEVELS.length) {
+      showLobbyPreview(idx);
+      if (lobbyRole === 'guest') {
+        const modeName = mode === 'versus' ? 'Versus' : 'Co-op';
+        $('lobby-guest-msg').textContent = `Host is setting up: ${modeName} · ${LEVELS[idx].name}`;
+      }
+    }
     refreshLobby();
+  },
+
+  // the host's current lobby selection, for mirroring to a peer
+  lobbyConfig() {
+    return { mode: $('lobby-mode').value, levelIdx: Number($('lobby-map').value) };
   },
 
   hideLobby() {

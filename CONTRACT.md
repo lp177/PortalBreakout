@@ -356,3 +356,22 @@ Three distinct lives models, keyed by mode:
 - **Versus** (`gameMode === 'versus'`, AI or MP): per-side lives, **first side to 0 loses** (match ends immediately). Unchanged from v1.1.
 
 Wire: co-op MP `state` now carries `lb`/`lt` (per-side lives); the co-op `level` message carries `lb`/`lt` for initial/ resync sync. `{t:'ev', name:'lifeLost', side}` carries `side` in co-op too so the guest mirrors the correct heart. Guest is always MP, so `gameMode === 'coop'` on the guest means co-op MP (two heart rows). Default friend games are **versus** (each player their own lives); co-op is the other lobby Mode option.
+
+## Play again without re-inviting (v1.3)
+
+Before v1.3 every post-game exit except same-map **Rematch** ran `leaveGame()` → `net.close()`, so choosing a different map forced a fresh invite. The room now survives the end of a game.
+
+- **`#dlg-level-end` gains `#btn-le-lobby` ("Change map")**, shown only while a room is live and usable (`net.role && net.connected`), for host *and* guest, in versus match-end and co-op level-end/game-over. When it is shown, `#btn-le-menu` is relabelled **"Leave game"** so ending the session is a deliberate act. `ui.showLevelEnd`/`ui.showMatchEnd` take `canLobby`.
+- **Host** clicks it → `'back-to-lobby'` → `engine.quitToLobby()`: identical to `quit()` (shared `teardown()`) except it broadcasts `{t:'phase', v:'backtolobby'}` and never touches the net session. `main.js` then returns to the menu screen and re-opens the lobby seeded with the mode + map just played, and sends `{t:'lobby', mode, map}`.
+- **Guest** receiving `backtolobby` → engine `startGuest()` (re-arm: loop running, `phase='idle'`, so the next `{t:'level'}` pulls it straight into the new match) + `callbacks.onRemoteLobby()` → close the end/pause dialogs, back to the lobby view. A guest may also click "Change map" itself: it re-arms locally and waits in its lobby; the host's later Start/Rematch still reaches it.
+- **Start** from the re-entered lobby begins a fresh game on both sides (lives/scores/ramp reset) with no re-invite. Kick, Leave, `closed`, `lost` and every other `quit()` caller keep their v1.2 behavior (still `backtomenu`).
+- `engine.onMatchEnd` payload gains `levelIdx` so the lobby can re-open on the arena just played.
+
+## Map previews in the lobby (v1.3)
+
+Picking a map by name alone was guesswork, so `#dlg-lobby` shows the layout. `#lobby-preview` (a `<figure>` with `#lobby-preview-canvas`, `aria-hidden`, and `#lobby-preview-name`) sits below the selects and is visible to **both** roles; the `<select>` remains the accessible control.
+
+- `renderLevelThumb(canvas, levelIdx)` (`ui.js`) draws `LEVELS[idx].rows` as a `GRID_COLS × GRID_ROWS` mini-playfield in the real `BRICK_TYPES` colors over the field's dark background, with the two portal paddles hinted top/bottom, DPR-aware.
+- Host changing `#lobby-map` or `#lobby-mode` emits `'lobby-config' {mode, levelIdx}` → `main.js` sends `{t:'lobby', mode, map}` (host + connected only), so the **guest's preview and "Host is setting up: Mode · Map" line track the host's browsing live**. The `peer-joined` `{t:'lobby'}` carries the current selection too. `ui.updateLobby` accepts `{mode, levelIdx}` and validates the peer-supplied index.
+- `ui.showLobby` takes an optional `levelIdx` to seed select + preview; `ui.lobbyConfig()` returns the host's current `{mode, levelIdx}`.
+- The lobby Mode option text for co-op now matches the v1.2.1 model ("3 lives each, revive on level clear"), and `.field-row select` gets `min-width: 0` — a flex item's `min-width: auto` let the long option text push the select past the dialog edge on ≤420px screens.

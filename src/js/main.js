@@ -33,6 +33,10 @@ const goToMenu = () => {
   setMusic('menu');
 };
 
+// a live, usable room — the precondition for offering "Change map" (a dropped
+// or absent session has no lobby to go back to)
+const inRoom = () => Boolean(net.role) && net.connected;
+
 const startGame = (levelIdx) => {
   currentLevelIdx = levelIdx;
   vsConfig = null;       // campaign game: no versus config in effect
@@ -83,7 +87,12 @@ const netCb = (event) => {
       lastRole = 'host';
       ui.netStatus('connected');
       ui.updateLobby({ connected: true });    // enable Start, reveal Kick, flip the guest slot
-      net.send({ t: 'lobby' });               // definitively put the guest in the lobby view
+      {
+        // definitively put the guest in the lobby view, with the host's current
+        // mode/map so their preview matches from the first frame
+        const cfg = ui.lobbyConfig();
+        net.send({ t: 'lobby', mode: cfg.mode, map: cfg.levelIdx });
+      }
       ui.toast('Friend connected!');
       engine.resync(); // no-op unless a hosted game is already running
       break;
@@ -93,15 +102,12 @@ const netCb = (event) => {
       // unknown t); everything else is forwarded to the simulation
       if (msg && msg.t === 'lobby') {
         if (screen !== 'game') {              // ignore a stray lobby msg once in-game
-          ui.showLobby({ role: 'guest', connected: true });
-          const mapName = (msg.map != null && LEVELS[msg.map]) ? LEVELS[msg.map].name : null;
-          if (msg.mode || mapName) {
-            const modeName = msg.mode === 'versus' ? 'Versus' : 'Co-op';
-            const el = document.getElementById('lobby-guest-msg');
-            if (el) el.textContent = mapName
-              ? `Host is setting up: ${modeName} · ${mapName}`
-              : `Host is setting up a ${modeName} game…`;
+          // don't re-open (and reset) a lobby that is already up: the host
+          // sends this on every mode/map change while browsing
+          if (!document.getElementById('dlg-lobby')?.open) {
+            ui.showLobby({ role: 'guest', connected: true });
           }
+          ui.updateLobby({ connected: true, mode: msg.mode, levelIdx: msg.map });
         }
         break;
       }
@@ -274,6 +280,30 @@ const onAction = (name, data = {}) => {
       if (data.mode === 'versus') startVersus({ type: 'mp', levelIdx: data.levelIdx });
       else startGame(data.levelIdx);       // startGame → engine.startHost (host role)
       break;
+    case 'lobby-config':
+      // host is browsing mode/map in the lobby — mirror it so the guest's
+      // preview and "host is setting up" line follow along
+      if (net.role === 'host' && net.connected) {
+        net.send({ t: 'lobby', mode: data.mode, map: data.levelIdx });
+      }
+      break;
+    case 'back-to-lobby': {
+      // Post-game exit that KEEPS the room: both players land back in the lobby
+      // so the host can pick another map and start again — no re-invite.
+      if (!net.role) { leaveGame(); break; }     // solo / vs-AI: nothing to keep
+      const role = net.role;
+      const mode = vsConfig ? 'versus' : 'coop';
+      if (role === 'host') engine.quitToLobby();  // broadcasts 'backtolobby'
+      else engine.startGuest();                   // re-arm; the room stays up
+      document.getElementById('dlg-level-end')?.close?.();
+      ui.hidePause();
+      goToMenu();
+      ui.showLobby({ role, code: roomCode, connected: net.connected, mode, levelIdx: currentLevelIdx });
+      if (role === 'host' && net.connected) {
+        net.send({ t: 'lobby', mode, map: currentLevelIdx });
+      }
+      break;
+    }
     case 'lobby-kick':
       net.send({ t: 'kick' });             // tell the guest before we drop the channel
       ui.hideLobby();
@@ -356,7 +386,7 @@ const init = () => {
         ui.refreshLevelGrid();
       }
       const isLast = levelIdx === LEVELS.length - 1;
-      ui.showLevelEnd({ cleared, score, best, levelIdx, isLast });
+      ui.showLevelEnd({ cleared, score, best, levelIdx, isLast, canLobby: inRoom() });
       if (cleared && isLast) {
         // beating the final level gets its own payoff, on the dialog itself
         audio.sfx('win');
@@ -367,14 +397,15 @@ const init = () => {
     onGameOver() {
       // level-end dialog (cleared:false) covers the UX; nothing extra needed
     },
-    onMatchEnd({ winner, youWon, scoreBottom, scoreTop, timeMs }) {
+    onMatchEnd({ winner, youWon, scoreBottom, scoreTop, timeMs, levelIdx }) {
       // versus only; never records level progress. Local perspective (guest = top):
       const mySide = youWon ? winner : (winner === 'bottom' ? 'top' : 'bottom');
       const scoreYou = mySide === 'bottom' ? scoreBottom : scoreTop;
       const scoreThem = mySide === 'bottom' ? scoreTop : scoreBottom;
       if (youWon) audio.sfx('win'); // engine already played the loser's 'gameOver'
       const canRematch = (lastRole ?? net.role) !== 'guest'; // host + solo-vs-AI only
-      ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch });
+      if (Number.isInteger(levelIdx)) currentLevelIdx = levelIdx; // seed the lobby re-open
+      ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch, canLobby: inRoom() });
     },
     onPauseChange(paused, reason) {
       // versus flag: the lost-connection primary action is an AI takeover
@@ -392,6 +423,16 @@ const init = () => {
         showScreen('game');
         setMusic('game');
       }
+    },
+    onRemoteLobby() {
+      // guest: the host ended the game but kept the room — wait in the lobby
+      // for their next pick instead of being dropped to the menu (the engine
+      // has already re-armed us as a guest)
+      ui.hidePause();
+      document.getElementById('dlg-level-end')?.close?.();
+      goToMenu();
+      ui.showLobby({ role: 'guest', connected: net.connected });
+      ui.toast('Back in the lobby — the host is picking the next game.');
     },
     onRemoteQuit() {
       // guest: host went back to the menu — end our session too, or its zombie
@@ -429,7 +470,7 @@ const init = () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game
   });
 
-  window.__pb = { engine, ui, net, version: '1.2.0' };
+  window.__pb = { engine, ui, net, version: '1.3.0' };
 };
 
 if (document.readyState === 'loading') {

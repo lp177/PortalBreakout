@@ -497,6 +497,11 @@ dialog h3 {
 .field-row select { flex: 0 0 min(180px, 45%); }
 .field-row input[type='text'] { flex: 0 0 min(220px, 55%); }
 
+/* a flex item's default min-width:auto is its content width, so a long <option>
+   ("Versus — 3 lives each, …") pushed the select past the dialog edge */
+.field-row select,
+.field-row input[type='text'] { min-width: 0; max-width: 100%; }
+
 /* range — Material filled track; --fill is kept in sync by ui.js */
 input[type='range'] {
   -webkit-appearance: none;
@@ -767,6 +772,27 @@ input[type='text']::placeholder { color: rgba(255, 255, 255, .35); }
 .lobby-guest { margin: 8px 0 4px; }
 .lobby-guest .hint { margin: 8px 0; }
 
+/* map preview (v1.3): shows the layout behind the map name */
+.lobby-preview {
+  margin: 10px 0 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.lobby-preview canvas {
+  width: min(240px, 62%);
+  display: block;
+  border-radius: 10px;
+  background: #0b1017;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.45);
+}
+.lobby-preview-name {
+  font-size: .82rem;
+  color: var(--text-dim);
+  letter-spacing: .02em;
+}
+
 /* ============ level-end stats ============ */
 .le-stats {
   display: grid;
@@ -868,6 +894,9 @@ input[type='text']::placeholder { color: rgba(255, 255, 255, .35); }
   .level-grid { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 10px; }
   .field-row { flex-wrap: wrap; }
   .field-row input[type='range'] { flex: 1 1 100%; }
+  /* stack label over control so the long mode/map names stay readable */
+  .field-row select { flex: 1 1 100%; }
+  .lobby-preview canvas { width: min(200px, 70%); }
   .lobby-players { gap: 8px; }
   .lobby-player { min-height: 60px; padding: 10px 6px; }
   .lobby-vs { font-size: .7rem; }
