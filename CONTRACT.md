@@ -400,3 +400,25 @@ The music stays fully procedural (no assets). What changed is that it is no long
 - **New song on every new map.** `audio.music(track, {fresh})` restarts the game track on a different style even when it is already playing. Called from `startGame`/`startVersus` (so a rematch and a lobby map change both re-roll), `loadArena` (versus arena cycle), `nextLevel`, and the guest's `level` handler — skipped when the message carries a resync `diff`.
 - **Versus arena clear rewards the last breaker.** Clearing the arena gives `lastBreaker` an extra life (capped at `VS_LIFE_MAX = 5`) as well as the next serve, so the final brick is worth contesting. `hostEv('levelClear', x, y, side)` carries the winning side for the guest's `+1 LIFE` flourish; the lives themselves ride the `lb`/`lt` the following level message already sends.
 - **"Change map" is its own button.** `#btn-le-lobby` now shows for a live room *and* for solo vs-Computer, always labelled "Change map": with a room it re-opens the lobby, otherwise it opens the versus setup focused on `#vs-map`. `#btn-le-setup` ("Change difficulty") focuses `#vs-difficulty`. Changing the map was previously reachable only *through* "Change difficulty", which no player would guess. `ui.showVersusSetup({focus})` handles the focus target.
+
+## Songs that actually differ, and keyboard navigation (v1.4)
+
+**Six distinct songs.** The v1.3.1 tracks all shared one minor pentatonic scale and one arrangement (bass on every quarter, 16th arps, hat on the off-beat) — only tempo and waveform varied, so they were heard as a single tune at different speeds. Each `GAME_STYLES` entry now owns the things ears actually notice:
+
+- `scale` — one of `SCALES` (minor/major pentatonic, dorian, phrygian, lydian)
+- `bassSteps` / `hatSteps` — explicit step indices within the 16-step bar, so the groove itself differs
+- `arpEvery` — subdivision: 1 = 16ths, 2 = 8ths, 4 = quarters, 3 = drifts against the bar
+- `swing` — fraction of a step by which odd 16ths are pushed late
+- `pad` — sustained root/fifth/octave chord at bar start, holding the sparse songs up
+- plus `octSpread`, per-part decay and timbre
+
+The six: `aperture` (unchanged original, 110), `coolant` (84, half-time dub), `cascade` (132, relentless), `skybox` (118, bright major), `reactor` (96, phrygian shuffle), `vector` (126, lydian, 3-step arps). Measured note density spans **2.7 → 11 notes/s**, a 4× spread; the old set was near-uniform by construction. Switching, intensity and effect-scoped return are unchanged.
+
+**Keyboard navigation** (`wireKeyboardNav` in `ui.js`). Arrow keys move focus through the open dialog, or the active screen if none is open, so a keyboard player never has to reach for the mouse; Enter/Space activate natively.
+
+- Direction is **geometric**, not DOM order: the nearest item along the pressed axis wins, with a ×2.5 penalty for sideways drift. The level grid therefore navigates as a grid (verified 1 → 2 right, → 8 down, → 7 left, → 1 up) and button columns as columns.
+- Controls that own the arrows keep them: `<select>`, `<textarea>`, and left/right in text and range inputs (`ownsArrows`). A focused `#opt-effects` changes value rather than moving focus.
+- **The game screen is exempt** when no dialog is open — arrows stay paddle control. A dialog over the game (pause, level end) navigates normally.
+- Opening a dialog focuses its `.btn-primary`, so Enter works immediately.
+- A rebind capture (`listening`) suppresses navigation entirely.
+- Disabled items are skipped, which means locked level tiles are correctly unreachable.

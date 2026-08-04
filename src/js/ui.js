@@ -146,6 +146,118 @@ const wireRippleAndClickSfx = () => {
   });
 };
 
+// ---------- keyboard navigation (v1.4) ----------
+// Arrow keys move focus through whatever is on screen — the open dialog if
+// there is one, otherwise the active screen — so a keyboard player never has to
+// reach for the mouse. Enter/Space activate natively once something is focused.
+// Direction is geometric rather than DOM order, so the level grid navigates as
+// a grid and button columns navigate as columns.
+const NAV_SELECTOR = 'button:not([disabled]), a[href], select, input:not([type="hidden"]), [tabindex]:not([tabindex="-1"])';
+
+// controls that own the arrow keys themselves — never steal from these
+const ownsArrows = (el, key) => {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'SELECT') return true;
+  if (tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') {
+    const t = el.type;
+    if (t === 'range') return key === 'ArrowLeft' || key === 'ArrowRight';
+    if (t === 'text' || t === 'search' || t === 'number' || t === 'email' || t === 'password') {
+      return key === 'ArrowLeft' || key === 'ArrowRight';
+    }
+  }
+  return false;
+};
+
+const navRoot = () => {
+  const dlg = [...document.querySelectorAll('dialog')].find((d) => d.open);
+  if (dlg) return dlg;
+  return document.querySelector('.screen.active');
+};
+
+const navItems = (root) => [...root.querySelectorAll(NAV_SELECTOR)].filter((el) => {
+  if (el.disabled || el.hidden) return false;
+  if (el.closest('[hidden]')) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+});
+
+// nearest item in the requested direction: primary-axis distance dominates, with
+// a penalty for drifting sideways, which is what makes grids feel natural
+const pickInDirection = (items, from, key) => {
+  const a = from.getBoundingClientRect();
+  const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
+  const sign = (key === 'ArrowRight' || key === 'ArrowDown') ? 1 : -1;
+  let best = null, bestScore = Infinity;
+  for (const el of items) {
+    if (el === from) continue;
+    const r = el.getBoundingClientRect();
+    const bx = r.left + r.width / 2, by = r.top + r.height / 2;
+    const main = (horizontal ? bx - ax : by - ay) * sign;
+    if (main <= 1) continue;                       // not in this direction
+    const cross = Math.abs(horizontal ? by - ay : bx - ax);
+    const score = main + cross * 2.5;
+    if (score < bestScore) { bestScore = score; best = el; }
+  }
+  return best;
+};
+
+const wireKeyboardNav = () => {
+  document.addEventListener('keydown', (e) => {
+    const key = e.key;
+    if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (listening) return;                          // a rebind capture owns the keyboard
+    const root = navRoot();
+    if (!root) return;
+    // no dialog open and we're in the game: arrows drive the paddles
+    if (root.id === 'screen-game') return;
+
+    const active = document.activeElement;
+    if (ownsArrows(active, key)) return;
+
+    const items = navItems(root);
+    if (!items.length) return;
+
+    // nothing focused inside this context yet → the first arrow just enters it
+    if (!active || !root.contains(active) || active === document.body) {
+      e.preventDefault();
+      items[0].focus();
+      return;
+    }
+    const next = pickInDirection(items, active, key);
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      if (typeof next.scrollIntoView === 'function') next.scrollIntoView({ block: 'nearest' });
+    }
+  });
+
+  // opening a dialog should land focus on its primary action, so Enter works
+  // immediately rather than after a hunt
+  const focusPrimary = (dlg) => {
+    if (!dlg?.open) return;
+    const inside = document.activeElement && dlg.contains(document.activeElement)
+      && document.activeElement !== dlg;
+    if (inside) return;
+    const target = dlg.querySelector('.btn-primary:not([disabled]):not([hidden])')
+      ?? navItems(dlg)[0];
+    target?.focus();
+  };
+  for (const dlg of document.querySelectorAll('dialog')) {
+    // 'toggle' fires on modern dialogs; the click fallback covers the rest
+    dlg.addEventListener('toggle', () => requestAnimationFrame(() => focusPrimary(dlg)));
+  }
+  document.addEventListener('click', (e) => {
+    const btn = e.target instanceof Element ? e.target.closest('button[commandfor]') : null;
+    if (!btn) return;
+    const dlg = document.getElementById(btn.getAttribute('commandfor'));
+    if (dlg) requestAnimationFrame(() => focusPrimary(dlg));
+  });
+};
+
 // ---------- invoker-commands fallback ----------
 const wireInvokerFallback = () => {
   if ('commandForElement' in HTMLButtonElement.prototype) return;
@@ -787,6 +899,7 @@ export const ui = {
 
     wireRippleAndClickSfx();
     wireInvokerFallback();
+    wireKeyboardNav();
     wireMenu();
     wireOptionsForm();
     wireMultiplayer();

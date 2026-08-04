@@ -354,40 +354,95 @@ const GAME_PATS_B = [
   [2, 0, 3, 1, 4, 1, 3, 0],
 ];
 
+const GAME_PATS_C = [
+  [0, 5, 3, 1, 4, 2, 6, 3],
+  [6, 4, 2, 0, 3, 5, 1, 4],
+  [0, 1, 3, 6, 4, 3, 1, 5],
+  [2, 6, 4, 1, 5, 0, 3, 2],
+];
+
+// Scales matter more than timbre for "is this a different song?" — four tracks
+// sharing one pentatonic all sounded like the same tune at different speeds.
+const SCALES = {
+  minorPenta: [0, 3, 5, 7, 10],
+  majorPenta: [0, 2, 4, 7, 9],
+  dorian: [0, 2, 3, 5, 7, 9, 10],
+  phrygian: [0, 1, 3, 5, 7, 8, 10],
+  lydian: [0, 2, 4, 6, 7, 9, 11],
+};
+
 // One "song" per entry: same synth vocabulary, different tempo/harmony/timbre.
 // [0] is the original game track, parameter for parameter — it's the one that
 // already works, so it stays exactly as it was and just gained company.
+// Six songs that differ in the things ears actually notice: scale, where the
+// bass lands in the bar, what subdivision the arpeggio runs at, swing, and
+// whether a pad holds underneath. Steps are 16ths within a 16-step bar.
 const GAME_STYLES = [
   {
-    name: 'aperture', bpm: 110, pats: GAME_PATS,
+    // the original track, unchanged: straight 16ths, bass on every quarter
+    name: 'aperture', bpm: 110, pats: GAME_PATS, scale: SCALES.minorPenta,
     roots: [0, 0, 8, 10], altRoots: [0, 3, 8, 10], altChance: 0.3,
-    bassType: 'triangle', bassFreq: 110, bassPeak: 0.17, bassPeakOff: 0.13,
-    arpType: 'square', arpPeak: 0.055, arpDetune: 6, arpBase: 220,
+    bassSteps: [0, 4, 8, 12], bassType: 'triangle', bassFreq: 110,
+    bassPeak: 0.17, bassPeakOff: 0.13, bassDecay: 0.16,
+    arpEvery: 1, arpType: 'square', arpPeak: 0.055, arpDetune: 6,
+    arpBase: 220, arpDecay: 0.1, octSpread: 1,
+    hatSteps: [2, 6, 10, 14], hatPeak: 0.018, swing: 0, pad: 0,
     lpBase: 2000, lpRange: 2400, restProb: 0.12, hiOctChance: 0.35,
   },
   {
-    // slower, wider, dubbier — more room between hits
-    name: 'coolant', bpm: 92, pats: GAME_PATS_B,
+    // half-time dub: almost no bass, quarter-note plucks, a pad holding it up
+    name: 'coolant', bpm: 84, pats: GAME_PATS_B, scale: SCALES.minorPenta,
     roots: [0, 0, 5, 3], altRoots: [0, 7, 5, 3], altChance: 0.35,
-    bassType: 'sine', bassFreq: 98, bassPeak: 0.2, bassPeakOff: 0.14,
-    arpType: 'triangle', arpPeak: 0.06, arpDetune: 9, arpBase: 196,
-    lpBase: 1500, lpRange: 2600, restProb: 0.24, hiOctChance: 0.3,
+    bassSteps: [0, 10], bassType: 'sine', bassFreq: 98,
+    bassPeak: 0.24, bassPeakOff: 0.18, bassDecay: 0.42,
+    arpEvery: 4, arpType: 'triangle', arpPeak: 0.075, arpDetune: 9,
+    arpBase: 196, arpDecay: 0.34, octSpread: 1,
+    hatSteps: [12], hatPeak: 0.014, swing: 0.16, pad: 0.06,
+    lpBase: 1200, lpRange: 2400, restProb: 0.3, hiOctChance: 0.25,
   },
   {
-    // fast and tight — the "test chamber is heating up" one
-    name: 'cascade', bpm: 128, pats: GAME_PATS,
+    // relentless: busy syncopated bass, 16th saws, a hat on every 8th
+    name: 'cascade', bpm: 132, pats: GAME_PATS, scale: SCALES.dorian,
     roots: [0, 10, 8, 10], altRoots: [0, 10, 7, 5], altChance: 0.4,
-    bassType: 'triangle', bassFreq: 110, bassPeak: 0.16, bassPeakOff: 0.12,
-    arpType: 'sawtooth', arpPeak: 0.038, arpDetune: 4, arpBase: 220,
-    lpBase: 1700, lpRange: 3000, restProb: 0.1, hiOctChance: 0.45,
+    bassSteps: [0, 3, 6, 8, 11, 14], bassType: 'triangle', bassFreq: 110,
+    bassPeak: 0.15, bassPeakOff: 0.11, bassDecay: 0.11,
+    arpEvery: 1, arpType: 'sawtooth', arpPeak: 0.036, arpDetune: 4,
+    arpBase: 220, arpDecay: 0.08, octSpread: 1,
+    hatSteps: [0, 2, 4, 6, 8, 10, 12, 14], hatPeak: 0.013, swing: 0, pad: 0,
+    lpBase: 1700, lpRange: 3000, restProb: 0.08, hiOctChance: 0.45,
   },
   {
-    // brighter, hopeful lift
-    name: 'skybox', bpm: 118, pats: GAME_PATS_B,
+    // bright and airy: major pentatonic, 8th-note leaps across two octaves
+    name: 'skybox', bpm: 118, pats: GAME_PATS_B, scale: SCALES.majorPenta,
     roots: [0, 5, 7, 5], altRoots: [0, 5, 9, 7], altChance: 0.3,
-    bassType: 'triangle', bassFreq: 123.47, bassPeak: 0.16, bassPeakOff: 0.12,
-    arpType: 'square', arpPeak: 0.05, arpDetune: 7, arpBase: 246.94,
-    lpBase: 2200, lpRange: 2400, restProb: 0.16, hiOctChance: 0.4,
+    bassSteps: [0, 8], bassType: 'triangle', bassFreq: 123.47,
+    bassPeak: 0.17, bassPeakOff: 0.13, bassDecay: 0.24,
+    arpEvery: 2, arpType: 'square', arpPeak: 0.052, arpDetune: 7,
+    arpBase: 246.94, arpDecay: 0.16, octSpread: 2,
+    hatSteps: [4, 12], hatPeak: 0.016, swing: 0, pad: 0.045,
+    lpBase: 2400, lpRange: 2200, restProb: 0.14, hiOctChance: 0.5,
+  },
+  {
+    // dark shuffle: phrygian, heavy swing, off-beat bass
+    name: 'reactor', bpm: 96, pats: GAME_PATS_C, scale: SCALES.phrygian,
+    roots: [0, 0, 1, 8], altRoots: [0, 5, 1, 8], altChance: 0.35,
+    bassSteps: [0, 6, 8, 14], bassType: 'sawtooth', bassFreq: 110,
+    bassPeak: 0.14, bassPeakOff: 0.1, bassDecay: 0.2,
+    arpEvery: 2, arpType: 'square', arpPeak: 0.045, arpDetune: 11,
+    arpBase: 220, arpDecay: 0.14, octSpread: 1,
+    hatSteps: [4, 12], hatPeak: 0.02, swing: 0.3, pad: 0,
+    lpBase: 1400, lpRange: 2200, restProb: 0.18, hiOctChance: 0.3,
+  },
+  {
+    // angular: lydian, arps every 3 steps so they drift against the 4/4 bar
+    name: 'vector', bpm: 126, pats: GAME_PATS_C, scale: SCALES.lydian,
+    roots: [0, 7, 2, 9], altRoots: [0, 2, 7, 4], altChance: 0.4,
+    bassSteps: [0, 4, 8, 12], bassType: 'sine', bassFreq: 116.54,
+    bassPeak: 0.16, bassPeakOff: 0.1, bassDecay: 0.14,
+    arpEvery: 3, arpType: 'triangle', arpPeak: 0.06, arpDetune: 5,
+    arpBase: 233.08, arpDecay: 0.12, octSpread: 2,
+    hatSteps: [6, 14], hatPeak: 0.015, swing: 0, pad: 0.03,
+    lpBase: 2100, lpRange: 2600, restProb: 0.12, hiOctChance: 0.4,
   },
 ];
 
@@ -407,11 +462,13 @@ function setupGame(s, avoid = null, force = null) {
   s.schedule = gameStep;
 }
 
-function gameStep(s, t) {
+function gameStep(s, rawT) {
   const BAR = 16;
   const st = s.style;
   // 0..1 "how fast is the ball" — drives brightness, density and percussion
   const I = intensity;
+  // shuffle: push the odd 16ths late so a swung track grooves instead of marching
+  const t = st.swing && s.step % 2 ? rawT + st.swing * s.stepDur : rawT;
   if (s.step % (BAR * 4) === 0) { // evolve every 4 bars so the loop doesn't grate
     s.arpPat = st.pats[(s.rng() * st.pats.length) | 0];
     s.oct = s.rng() < st.hiOctChance ? 2 : 1;
@@ -419,24 +476,41 @@ function gameStep(s, t) {
   }
   const root = s.roots[((s.step / BAR) | 0) % 4];
   const i = s.step % BAR;
-  if (i % 4 === 0) { // soft bass pulse on quarters, accent on the downbeat
+
+  if (st.bassSteps.includes(i)) {   // where the bass sits is most of the groove
     tone(s.lp, t, {
       type: st.bassType, freq: st.bassFreq * 2 ** (root / 12),
       peak: (i === 0 ? st.bassPeak : st.bassPeakOff) * (0.9 + 0.25 * I),
-      decay: 0.16, attack: 0.004,
+      decay: st.bassDecay, attack: 0.004,
     });
   }
-  // driving 16th arpeggio with occasional rests — fewer rests at high speed
-  if (s.rng() > st.restProb * (1 - 0.65 * I)) {
-    const deg = s.arpPat[s.step % 8];
-    const f = st.arpBase * 2 ** ((root + PENTA[deg] + 12 * (s.oct - 1)) / 12);
+
+  // sustained chord under the sparse songs, so their space reads as intentional
+  if (st.pad && i === 0) {
+    const barLen = BAR * s.stepDur;
+    for (const semi of [0, 7, 12]) {
+      tone(s.lp, t, {
+        type: 'triangle', freq: (st.bassFreq * 2) * 2 ** ((root + semi) / 12),
+        peak: st.pad * (0.8 + 0.4 * I), decay: barLen * 0.9, attack: 0.08,
+      });
+    }
+  }
+
+  // arpeggio at this song's own subdivision (16ths / 8ths / quarters, or every
+  // 3 steps for a pattern that drifts against the bar)
+  if (s.step % st.arpEvery === 0 && s.rng() > st.restProb * (1 - 0.65 * I)) {
+    const scale = st.scale;
+    const deg = st.pats === GAME_PATS_C ? s.arpPat[(s.step / st.arpEvery) % 8] : s.arpPat[s.step % 8];
+    const oct = st.octSpread > 1 ? (s.oct - 1) + ((s.step >> 2) % st.octSpread) : s.oct - 1;
+    const f = st.arpBase * 2 ** ((root + scale[deg % scale.length] + 12 * oct) / 12);
     tone(s.lp, t, {
       type: st.arpType, freq: f, detune: s.step % 2 ? st.arpDetune : -st.arpDetune,
-      peak: st.arpPeak * (0.85 + 0.4 * I), decay: 0.1, attack: 0.002,
+      peak: st.arpPeak * (0.85 + 0.4 * I), decay: st.arpDecay, attack: 0.002,
     });
   }
-  if (i % 4 === 2) { // faint off-beat hat tick
-    hiss(s.gain, t, { type: 'highpass', freq: 7000, peak: 0.018 + 0.012 * I, decay: 0.03, attack: 0.001 });
+
+  if (st.hatSteps.includes(i)) {
+    hiss(s.gain, t, { type: 'highpass', freq: 7000, peak: st.hatPeak + 0.012 * I, decay: 0.03, attack: 0.001 });
   }
   // extra drive that only shows up when the ball is genuinely quick
   if (I > 0.45 && i % 4 === 1) {
