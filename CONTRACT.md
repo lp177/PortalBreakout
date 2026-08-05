@@ -37,7 +37,7 @@ export const STORAGE_SETTINGS = 'pb.settings.v1', STORAGE_PROGRESS = 'pb.progres
 | `css/style.css` | ui | Material dark theme, ripple, screens, HUD, responsive |
 | `js/constants.js` | (fixed) | shared constants above |
 | `js/storage.js` | (fixed) | settings + progress persistence |
-| `js/levels.js` | levels | 50 level definitions + brick type table |
+| `js/levels.js` | levels | 150 level definitions + brick type table |
 | `js/audio.js` | audio | procedural WebAudio SFX + music |
 | `js/particles.js` | particles | particles, screen shake, floating text, portal FX |
 | `js/input.js` | input | keybinds, rebinding, mouse/touch, per-frame paddle intent |
@@ -67,11 +67,11 @@ export const BRICK_TYPES = {
   'E': { hp: 1, points: 150, color: '#ff7043', name: 'explosive' },   // destroys 3×3 neighborhood, chains
   'P': { hp: 1, points: 100, color: '#7e57c2', name: 'powerup' },     // guaranteed powerup drop
 };
-// LEVELS: array of 50. rows: exactly GRID_ROWS strings of exactly GRID_COLS chars ('.' = empty).
+// LEVELS: array of 150. rows: exactly GRID_ROWS strings of exactly GRID_COLS chars ('.' = empty).
 export const LEVELS = [ { name: 'Aperture Rows', rows: [ '.............', /* ×14 */ ] }, /* … */ ];
 ```
 
-Levels are inspired by famous Breakout/Arkanoid layouts (rainbow rows, pyramid, space invader, DOH face, checkerboard, tunnels, fortress…) plus Portal-themed pixel art (companion cube, cake, turret, portal rings, "PB" letters…). Difficulty ramps: early levels sparse & soft colors, later ones dense with S/G/E. Every level MUST be completable (≥1 destructible brick; no destructible brick fully enclosed by gold).
+Levels are inspired by famous Breakout/Arkanoid layouts (rainbow rows, pyramid, space invader, DOH face, checkerboard, tunnels, fortress…) plus Portal-themed pixel art (companion cube, cake, turret, portal rings, "PB" letters…). Difficulty ramps: early levels sparse & soft colors, later ones dense with S/G/E. Every level MUST be completable (≥1 destructible brick; no destructible brick fully enclosed by gold). "Not sealed by gold" is necessary but **not sufficient** — because progression is sequential (`isUnlocked` needs the previous level completed), a level that is merely reachable-in-principle but takes an hour of flawless play is a progression wall. Gold laid as full-width bands, or as a frame the ball must thread through a single 1-cell gap, produces exactly that. The measured floor across the shipped set is ~8 clears/hour of continuous flawless play ([80] The Comb, [88] The Keep, [26] The Fortress); new layouts must sit at or above it.
 
 ## `js/storage.js` (already written — read it)
 
@@ -255,12 +255,17 @@ export const AI_PROFILES = {   // top-paddle AI tuning
   easy:   { speed: 420, err: 60, react: 0.35 },   // px/s, aim error px, re-aim interval s
   normal: { speed: 560, err: 35, react: 0.22 },
   hard:   { speed: 700, err: 18, react: 0.12 },
+  brutal: { speed: 900, err: 6, react: 0.06, predict: true, trap: 0.8 },  // v1.4.2
 };
+export const AI_SIM_DT = 1 / 120;   // fixed step of the predicting AI's forward sim
+export const AI_SIM_STEPS = 600;    // and its iteration cap (~5 s of flight)
 ```
 
 ### AI (engine-internal, top paddle, solo versus only)
 
 Each `react` interval, pick the nearest ball with `vy < 0` (heading top), predict its x at `PADDLE_TOP_Y` with wall-bounce reflection, add uniform aim error `±err` scaled up with ball speed; move toward the target at ≤ `speed` px/s. No threat → drift toward the nearest catchable powerup (one floating up), else toward field center. Auto-launch stuck balls after ~1 s aimed with the standard serve spread; with laser active, fire opportunistically at live bricks on cooldown. The AI must feel beatable, not psychic: it reads only ball/powerup positions (no future spawn knowledge) and its error grows with the ramp.
+
+`predict` and `trap` are **opt-in flags** (see "Brutal difficulty" below); a profile without them gets exactly the behaviour above, bit for bit.
 
 ### Wire protocol additions (host→guest unless noted)
 
@@ -273,7 +278,7 @@ Each `react` interval, pick the nearest ball with `vy < 0` (heading top), predic
 ### API additions
 
 ```js
-engine.startVersusAI(difficulty /* 'easy'|'normal'|'hard' */, levelIdx?)   // levelIdx default: random
+engine.startVersusAI(difficulty /* 'easy'|'normal'|'hard'|'brutal' */, levelIdx?)  // levelIdx default: random
 engine.startVersusHost(levelIdx?)                                          // MP versus, host side
 // guest side: startGuest() unchanged — mode arrives via {t:'level', mode:'versus'}
 engine.setCallbacks({ …, onMatchEnd })   // onMatchEnd({ winner, youWon, scoreBottom, scoreTop, timeMs })
@@ -289,7 +294,7 @@ ui.showMatchEnd({ youWon, scoreYou, scoreThem, timeMs, canRematch })
 
 ### DOM additions (`index.html` — already updated; do not rename ids)
 
-Menu button `#btn-versus` opens `#dlg-versus`: a "vs Computer" section (difficulty `<select id="vs-difficulty">` easy/normal/hard + `#btn-vs-ai` start) and a "vs Friend" section (`#btn-vs-friend`: when MP-connected as host it starts the online match, otherwise it opens `#dlg-multiplayer` to connect first; ui.js relabels it accordingly, id stays).
+Menu button `#btn-versus` opens `#dlg-versus`: a "vs Computer" section (difficulty `<select id="vs-difficulty">` easy/normal/hard/brutal + `#btn-vs-ai` start) and a "vs Friend" section (`#btn-vs-friend`: when MP-connected as host it starts the online match, otherwise it opens `#dlg-multiplayer` to connect first; ui.js relabels it accordingly, id stays).
 
 ## Multiplayer v1.2 — latency reduction + lobby
 
@@ -378,7 +383,7 @@ Picking a map by name alone was guesswork, so `#dlg-lobby` shows the layout. `#l
 
 ## Arena picker, join cue, difficulty re-entry (v1.3.1)
 
-- **vs Computer picks its arena.** `#dlg-versus` gains `#vs-map` (a `Random arena` option plus all 50 levels) and `#vs-preview`, using the same `renderLevelThumb`. `'versus-ai'` now carries `levelIdx` (`undefined` for Random) → `engine.startVersusAI(difficulty, levelIdx)`, whose second parameter already existed and was simply never supplied. Random stays the default, so the previous behavior is what you get if you don't choose. `buildMapSelect(sel, {random})` and `paintPreview(canvasId, nameId, value)` are shared by both dialogs.
+- **vs Computer picks its arena.** `#dlg-versus` gains `#vs-map` (a `Random arena` option plus every level) and `#vs-preview`, using the same `renderLevelThumb`. `'versus-ai'` now carries `levelIdx` (`undefined` for Random) → `engine.startVersusAI(difficulty, levelIdx)`, whose second parameter already existed and was simply never supplied. Random stays the default, so the previous behavior is what you get if you don't choose. `buildMapSelect(sel, {random})` and `paintPreview(canvasId, nameId, value)` are shared by both dialogs.
 - **A friend joining is audible.** New `join` SFX (a rising D–A–D call over a portal shimmer, `SFX_DUR.join`), played on `peer-joined` (host), `open` (guest) and `reconnected`. A toast alone is easy to miss when you are waiting on someone else to act.
 - **`#btn-le-setup` ("Change difficulty")** on the match-end dialog for solo vs-Computer games (`canSetup`, i.e. `!net.role && vsConfig.type === 'ai'`) → `'versus-setup'` → quit to the menu and re-open `#dlg-versus` via `ui.showVersusSetup()`; the selects keep their last values, so it reads as "adjust" rather than "start over". `setLevelEndExit(canLobby, canSetup)` owns both optional exits.
 - When a friend leaves mid-versus and the AI takes over, `vsConfig` keeps its `levelIdx` so a rematch stays on the same arena.
@@ -434,3 +439,31 @@ The first six-song cut used seven-note modes and sounded harsh beside the origin
 - Opening a dialog focuses its `.btn-primary`, so Enter works immediately.
 - A rebind capture (`listening`) suppresses navigation entirely.
 - Disabled items are skipped, which means locked level tiles are correctly unreachable.
+
+## Brutal difficulty (v1.4.2)
+
+A fourth vs-Computer tier, `brutal` — `<option value="brutal">Brutal — predicts bounces, plays to trap you</option>` in `#vs-difficulty`. It rides the existing `'versus-ai' {difficulty}` action to `engine.startVersusAI`, so nothing else was rewired. `easy`/`normal`/`hard` are untouched: **every new behaviour is gated on a profile flag, never on the difficulty name**, and their numbers are unchanged.
+
+- **Shared collision math.** `brickCells(x, y)` (grid cells a ball can overlap) and `brickOverlap(x, y, brick)` (`null` or `{dx, dy, ox, oy}`, shallower axis = the bounce axis) are factored out of `collideBricks` and reused by the AI. One implementation of the geometry; the live path is byte-identical to before.
+- **`predict: true` — real prediction, not a straight line.** `aiPredictTop(ball)` forward-simulates the ball at `AI_SIM_DT = 1/120` for at most `AI_SIM_STEPS = 600` steps under the same rules `moveBalls`/`collideBricks` apply — side-wall reflection, brick bounces (with hit bricks treated as gone for the rest of the flight), fireball pass-through, the `slow` speed factor — and returns `{x, vx, steps}` at the `TOP_PLANE` crossing. `null` = it never gets there, or a brick turns it back down first (where it then re-enters is the *player's* choice), in which case the AI falls back to the legacy straight-line fold. It is pure: nothing in the world is mutated. Every rising ball is simulated and the **soonest arrival** wins the threat slot, which is not always the nearest one. Cost: once per `react` tick, not per frame — measured 59.9 fps and an identical p95 frame gap (16.7 ms) versus `hard`.
+- **`trap: 0.8` — catching where it hurts.** The portal re-emits the ball from the *player's* paddle at the offset it was caught at, with `vx += offset * PORTAL_ENGLISH`. So the catch position is the only steering the AI has, and the player is standing right where the ball comes out — the lever that makes them run is the return's sideways speed. `aiTrapOffset(vxIn)` therefore picks the sign that **adds** to the ball's own `vx` (a cross-court shot instead of a lob straight back), falling back to "toward the wall the player is furthest from" when the arrival is near-vertical (`|vxIn| <= 40`). Magnitude is fixed at `trap` (0.8 of a half-width, well inside the `w/2 + BALL_R` catch tolerance).
+- **The catch always outranks the trap.** `targetX = predictedX - offset·(w/2)`, then clamped into `[top.x - reach, top.x + reach]` where `reach = speed · (steps · AI_SIM_DT)` is what the paddle can still travel before the ball arrives. Affordable traps are committed to; unaffordable ones decay toward a plain catch instead of missing.
+- **Measured** (12 seeds × 90 s, fixed arenas, identical scripted opponent chasing the lowest ball at 10 Hz): human lives lost 0.17 easy / 0.08 normal / 0.83 hard / **1.75 brutal**; AI lives lost 3.0 / 2.8 / 1.6 / **0.5**. Human paddle travel was 8.2k / 13.7k / 19.1k / **35.0k px** (per minute of play: 9.3k / 12.2k / 14.5k / **23.7k**) — but read that one as harness-specific, not as a property of the AI: it is `|Δx|` summed over **100 ms samples**, which counts sustained cross-court sweeps and discards the tracking jitter a follower makes at every tier. An independent replay that instead accumulates `|Δx|` **every frame** puts hard and brutal at parity (≈0.98×), because the jitter floor it adds dominates and is the same for both. Lives lost and ball `|vx|` are the load-bearing numbers; paddle travel is only comparable against the same sampling interval. Mean ball `|vx|` roughly doubles against brutal (212 → 441 px/s), which is the trap doing its work. Replaying the same seeds against the pre-change build reproduces easy/normal/hard **bit for bit** (36/36 runs).
+
+## Grind-wall retune of seven gold-heavy levels (v1.4.3)
+
+Layout-only change to `js/levels.js`: seven of the 100 new levels used gold as full-width bands or as a frame with a single 1-cell entrance, which made them progression walls rather than hard levels. `LEVELS` is still exactly 150; names, order, and destructible counts are unchanged apart from `[136] The Sieve` (77 → 88, thinner gold mesh). Nothing outside `rows` was touched.
+
+Measured on a headless replica of `moveBalls`/`teleport`/`collideBricks`/`hitBrick` (STEP = 1/120, powerups and lasers live, an autopilot that never misses the ball), 80 runs per level capped at 1800 s, half with a dead-centre catch and half resampling the catch offset every portal pass:
+
+| level | before | after | shipped floor |
+| --- | --- | --- | --- |
+| `[56] The Coil` | **0** clears in 2 h | 12.4/h | ~8/h |
+| `[64] Switchback` | 0.2/h | 13.2/h | |
+| `[104] Bank Shot` | 2.1/h | 8.4/h | |
+| `[112] Hedge Maze` | 1.4/h | 8.8/h | |
+| `[120] Cell Block` | 1.2/h | 8.7/h | |
+| `[136] The Sieve` | 1.8/h | 11.3/h | |
+| `[144] Iris Gate` | 5.4/h | 10.0/h | |
+
+The failure mode they shared: **a destructible brick with gold directly above *and* below can only be struck from the side**, and `MIN_VY_RATIO` forbids a purely horizontal ball, so it has to be picked off inside a 34 px slot one slow pass at a time. Six of the seven were rows of exactly that behind a sealed band. The fixes stagger or shorten the gold so far fewer bricks are gold-sandwiched, and give every enclosure more than one mouth. Counter-intuitively, *removing* gold is not automatically an improvement — `[56]`'s outer gold frame was retained inward as ring walls and deleted only where it kept the ball circulating outside the structure with nothing to hit.

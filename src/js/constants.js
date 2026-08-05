@@ -30,8 +30,18 @@ export const NET_SMOOTH_TAU = 0.06;      // guest position smoothing time consta
 export const NET_SNAP_DIST = 120;        // px error above which to snap instead of smooth
 export const NET_LAGCOMP_MAX_MS = 400;   // ignore extrapolation beyond this (bad RTT)
 export const NET_CATCH_TOL_MAX = 24;     // px extra top-paddle catch tolerance for the remote paddle
-export const AI_PROFILES = {   // top-paddle AI tuning
+// Top-paddle AI tuning. `predict` and `trap` are opt-in behaviour flags: every
+// profile without them keeps the original straight-line aim exactly.
+//   predict — forward-simulate the ball (walls AND bricks) instead of drawing a
+//             straight line to the paddle plane
+//   trap    — |portal english| the AI aims for on the catch, 0..1 of a paddle
+//             half-width: it catches off-centre to throw the return away from
+//             where the player is standing
+export const AI_PROFILES = {
   easy:   { speed: 420, err: 60, react: 0.35 },   // px/s, aim error px, re-aim interval s
   normal: { speed: 560, err: 35, react: 0.22 },
   hard:   { speed: 700, err: 18, react: 0.12 },
+  brutal: { speed: 900, err: 6, react: 0.06, predict: true, trap: 0.8 },
 };
+export const AI_SIM_DT = 1 / 120;   // fixed step of the predicting AI's forward sim
+export const AI_SIM_STEPS = 600;    // and its iteration cap (~5 s of flight)

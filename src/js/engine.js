@@ -6,7 +6,8 @@ import {
   PADDLE_SPEED, BALL_R, BALL_SPEED, BALL_SPEED_MAX, SPEED_UP, PORTAL_ENGLISH,
   MIN_VY_RATIO, POWERUP_SPEED, POWERUP_R, POWERUP_DROP_CHANCE,
   LIVES_START, MAX_BALLS,
-  VS_LIVES, VS_LIFE_MAX, VS_RAMP_RATE, VS_RAMP_MAX, VS_BALL_SPEED_MAX, AI_PROFILES,
+  VS_LIVES, VS_LIFE_MAX, VS_RAMP_RATE, VS_RAMP_MAX, VS_BALL_SPEED_MAX,
+  AI_PROFILES, AI_SIM_DT, AI_SIM_STEPS,
   NET_STATE_HZ, NET_INPUT_HZ, NET_EXTRAP_MAX_MS, NET_SMOOTH_TAU, NET_SNAP_DIST,
   NET_LAGCOMP_MAX_MS, NET_CATCH_TOL_MAX,
 } from './constants.js';
@@ -19,8 +20,32 @@ import { net } from './net.js';
 const STEP = 1 / 120;
 const BOTTOM_PLANE = PADDLE_BOTTOM_Y - PADDLE_H / 2; // field-facing surface of bottom paddle
 const TOP_PLANE = PADDLE_TOP_Y + PADDLE_H / 2;       // field-facing surface of top paddle
-const GRID_BOTTOM = GRID_TOP + GRID_ROWS * BRICK_H;
-const GRID_MID_Y = GRID_TOP + (GRID_ROWS * BRICK_H) / 2;
+// Brick-band height is the same for every scale, so the playfield geometry the
+// ball lives in never changes — only how finely that band is divided.
+const BAND_H = GRID_ROWS * BRICK_H;
+const GRID_BOTTOM = GRID_TOP + BAND_H;
+const GRID_MID_Y = GRID_TOP + BAND_H / 2;
+
+// Per-level grid metrics (see levels.js `scale`). A level may be drawn on a
+// coarser or finer grid than the default 13×14; every consumer of the brick
+// array reads these instead of the constants, because collision indexes the
+// array densely as `row * gCols + col`.
+let gCols = GRID_COLS, gRows = GRID_ROWS, bW = BRICK_W, bH = BRICK_H;
+
+// scale key → grid dimensions. Both tile FIELD_W exactly and fill the same
+// band, so a giant brick is ~4× the area of a normal one and a mini is ¼.
+const GRID_SCALES = {
+  normal: { cols: GRID_COLS, rows: GRID_ROWS },
+  giant:  { cols: 6,  rows: 7 },    // 130 × 68  (~4× area)
+  mini:   { cols: 26, rows: 28 },   //  30 × 17  (¼ area)
+};
+
+const setGridScale = (scale) => {
+  const g = GRID_SCALES[scale] ?? GRID_SCALES.normal;
+  gCols = g.cols; gRows = g.rows;
+  bW = FIELD_W / gCols;
+  bH = BAND_H / gRows;
+};
 const COUNTDOWN_LEN = 2.1;                            // 3 ticks × 0.7 s
 const ORANGE = '#ff9800', BLUE = '#40c4ff';
 
@@ -181,15 +206,16 @@ const makeStars = () => {
 const buildBricks = (idx) => {
   const lvl = LEVELS[idx];
   levelName = lvl?.name ?? '';
+  setGridScale(lvl?.scale);          // giant / mini levels use their own grid
   const out = [];
   let left = 0;
-  for (let row = 0; row < GRID_ROWS; row++) {
+  for (let row = 0; row < gRows; row++) {
     const line = lvl?.rows?.[row] ?? '';
-    for (let col = 0; col < GRID_COLS; col++) {
+    for (let col = 0; col < gCols; col++) {
       const ch = line[col] ?? '.';
       const info = BRICK_TYPES[ch];
       if (!info) { out.push(null); continue; }
-      out.push({ type: ch, hp: info.hp, x: col * BRICK_W, y: GRID_TOP + row * BRICK_H, alive: true });
+      out.push({ type: ch, hp: info.hp, x: col * bW, y: GRID_TOP + row * bH, alive: true });
       if (info.hp !== Infinity) left++;
     }
   }
@@ -880,21 +906,35 @@ const moveBalls = (dt) => {
   }
 };
 
+// Grid cells a ball of BALL_R at (x,y) can possibly overlap, clamped to the
+// grid. Shared by the live collision pass and the AI's forward sim.
+const brickCells = (x, y) => ({
+  c0: clamp(Math.floor((x - BALL_R) / bW), 0, gCols - 1),
+  c1: clamp(Math.floor((x + BALL_R) / bW), 0, gCols - 1),
+  r0: clamp(Math.floor((y - BALL_R - GRID_TOP) / bH), 0, gRows - 1),
+  r1: clamp(Math.floor((y + BALL_R - GRID_TOP) / bH), 0, gRows - 1),
+});
+
+// Ball-vs-brick overlap: null when they don't touch, else the signed offsets to
+// the brick center and the penetration depth on each axis (the shallower axis
+// is the one the bounce resolves on). Pure — the caller applies the result.
+const brickOverlap = (x, y, brick) => {
+  const dx = x - (brick.x + bW / 2), dy = y - (brick.y + bH / 2);
+  const ox = bW / 2 + BALL_R - Math.abs(dx);
+  const oy = bH / 2 + BALL_R - Math.abs(dy);
+  return ox <= 0 || oy <= 0 ? null : { dx, dy, ox, oy };
+};
+
 const collideBricks = (b) => {
   if (b.y - BALL_R > GRID_BOTTOM + 60 || b.y + BALL_R < GRID_TOP - 60) return;
-  const c0 = clamp(Math.floor((b.x - BALL_R) / BRICK_W), 0, GRID_COLS - 1);
-  const c1 = clamp(Math.floor((b.x + BALL_R) / BRICK_W), 0, GRID_COLS - 1);
-  const r0 = clamp(Math.floor((b.y - BALL_R - GRID_TOP) / BRICK_H), 0, GRID_ROWS - 1);
-  const r1 = clamp(Math.floor((b.y + BALL_R - GRID_TOP) / BRICK_H), 0, GRID_ROWS - 1);
+  const { c0, c1, r0, r1 } = brickCells(b.x, b.y);
   for (let row = r0; row <= r1; row++) {
     for (let col = c0; col <= c1; col++) {
-      const brick = bricks[row * GRID_COLS + col];
+      const brick = bricks[row * gCols + col];
       if (!brick?.alive) continue;
-      const cx = brick.x + BRICK_W / 2, cy = brick.y + BRICK_H / 2;
-      const dx = b.x - cx, dy = b.y - cy;
-      const ox = BRICK_W / 2 + BALL_R - Math.abs(dx);
-      const oy = BRICK_H / 2 + BALL_R - Math.abs(dy);
-      if (ox <= 0 || oy <= 0) continue;
+      const hit = brickOverlap(b.x, b.y, brick);
+      if (!hit) continue;
+      const { dx, dy, ox, oy } = hit;
 
       const destructible = brick.hp !== Infinity;
       if (b.stuck) return;
@@ -923,7 +963,7 @@ const hitBrick = (brick, dmg, by) => {
   // step after endMatch() must not mutate scores or resurrect the match by
   // clearing the arena behind the result dialog
   if (!brick.alive || phase === 'matchend') return;
-  const cx = brick.x + BRICK_W / 2, cy = brick.y + BRICK_H / 2;
+  const cx = brick.x + bW / 2, cy = brick.y + bH / 2;
   const info = BRICK_TYPES[brick.type];
   if (brick.hp === Infinity) {
     audio.sfx('gold');
@@ -964,20 +1004,20 @@ const hitBrick = (brick, dmg, by) => {
 };
 
 const explode = (brick, by) => {
-  const cx = brick.x + BRICK_W / 2, cy = brick.y + BRICK_H / 2;
+  const cx = brick.x + bW / 2, cy = brick.y + bH / 2;
   audio.sfx('explode');
   fx.explosion(cx, cy);
   fx.shake(0.5);
   hostEv('explode', cx, cy);
   const idx = brickIndex(brick);
-  const row = Math.floor(idx / GRID_COLS), col = idx % GRID_COLS;
+  const row = Math.floor(idx / gCols), col = idx % gCols;
   let stagger = 0;
   for (let dr = -1; dr <= 1; dr++) {
     for (let dc = -1; dc <= 1; dc++) {
       if (!dr && !dc) continue;
       const nr = row + dr, nc = col + dc;
-      if (nr < 0 || nr >= GRID_ROWS || nc < 0 || nc >= GRID_COLS) continue;
-      const n = bricks[nr * GRID_COLS + nc];
+      if (nr < 0 || nr >= gRows || nc < 0 || nc >= gCols) continue;
+      const n = bricks[nr * gCols + nc];
       if (!n?.alive || n.hp === Infinity) continue;
       stagger += 0.02;
       const delay = 0.06 + stagger; // staggered chain: juicy dominoes
@@ -1108,10 +1148,10 @@ const moveLasers = (dt) => {
     l.y += l.dir * 900 * dt;
     if (l.y < -20 || l.y > FIELD_H + 20) { lasers.splice(i, 1); continue; }
     if (l.y < GRID_TOP - 10 || l.y > GRID_BOTTOM + 10) continue;
-    const col = clamp(Math.floor(l.x / BRICK_W), 0, GRID_COLS - 1);
-    const row = Math.floor((l.y - GRID_TOP) / BRICK_H);
-    if (row < 0 || row >= GRID_ROWS) continue;
-    const brick = bricks[row * GRID_COLS + col];
+    const col = clamp(Math.floor(l.x / bW), 0, gCols - 1);
+    const row = Math.floor((l.y - GRID_TOP) / bH);
+    if (row < 0 || row >= gRows) continue;
+    const brick = bricks[row * gCols + col];
     if (!brick?.alive) continue;
     if (brick.hp === Infinity) {
       audio.sfx('gold');
@@ -1221,12 +1261,85 @@ const endMatch = (winner) => {
 
 // Top-paddle AI (solo versus only). Reads nothing but ball/powerup/brick state.
 const aiHasLaserTarget = () => {
-  const col = clamp(Math.floor(paddles.top.x / BRICK_W), 0, GRID_COLS - 1);
-  for (let row = 0; row < GRID_ROWS; row++) {
-    const b = bricks[row * GRID_COLS + col];
+  const col = clamp(Math.floor(paddles.top.x / bW), 0, gCols - 1);
+  for (let row = 0; row < gRows; row++) {
+    const b = bricks[row * gCols + col];
     if (b?.alive && b.hp !== Infinity) return true;
   }
   return false;
+};
+
+// `predict` profiles only: forward-simulate one ball under the same rules the
+// engine uses — side-wall reflection and brick collisions — until it reaches
+// TOP_PLANE. Bricks are exactly what a straight-line guess gets wrong, so this
+// is the whole point. Returns {x, vx, steps} at the crossing — position, the
+// sideways speed the trap wants to amplify, and how long it has to get there —
+// or null when the ball never arrives inside the step budget or turns back down
+// first (where it then re-enters is the *player's* choice, not something to aim
+// at). Pure: bricks/balls are read, never mutated.
+const aiPredictTop = (ball) => {
+  let x = ball.x, y = ball.y, vx = ball.vx, vy = ball.vy;
+  // same effective speed moveBalls() would use; |v| is preserved by every
+  // bounce below, so the multiplier holds for the whole flight
+  const eff = timers.slow > 0 ? Math.max(ball.speed * 0.7, BALL_SPEED * 0.7) : ball.speed;
+  const mul = eff / (Math.hypot(vx, vy) || 1);
+  const fire = timers.fire > 0;
+  const broken = new Set();      // bricks this flight has already gone through
+  // Two deliberate approximations, both conservative for aiming purposes: silver
+  // bricks never lose hp here (a flight that hits the same silver twice bounces
+  // twice instead of passing through on the second), and explosive chains are
+  // not simulated. The bounce resolution below is otherwise the same arithmetic
+  // as collideBricks, Math.sign included — sign(0) must be 0 in both, or a ball
+  // centred exactly on a brick axis diverges from the live path.
+  for (let i = 1; i <= AI_SIM_STEPS; i++) {
+    const prevY = y;
+    x += vx * mul * AI_SIM_DT;
+    y += vy * mul * AI_SIM_DT;
+    if (x - BALL_R < 0) { x = BALL_R; vx = Math.abs(vx); }
+    else if (x + BALL_R > FIELD_W) { x = FIELD_W - BALL_R; vx = -Math.abs(vx); }
+    if (vy < 0 && prevY - BALL_R > TOP_PLANE && y - BALL_R <= TOP_PLANE) return { x, vx, steps: i };
+    if (vy > 0 && y + BALL_R >= BOTTOM_PLANE) return null;     // the player's portal owns it now
+    if (y - BALL_R > GRID_BOTTOM + 60 || y + BALL_R < GRID_TOP - 60) continue;
+    const { c0, c1, r0, r1 } = brickCells(x, y);
+    scan:
+    for (let row = r0; row <= r1; row++) {
+      for (let col = c0; col <= c1; col++) {
+        const idx = row * gCols + col;
+        const brick = bricks[idx];
+        if (!brick?.alive || broken.has(idx)) continue;
+        const hit = brickOverlap(x, y, brick);
+        if (!hit) continue;
+        const destructible = brick.hp !== Infinity;
+        if (fire && destructible) { broken.add(idx); break scan; }   // fireball pierces
+        if (hit.ox < hit.oy) { x += Math.sign(hit.dx) * hit.ox; vx = Math.sign(hit.dx) * Math.abs(vx); }
+        else { y += Math.sign(hit.dy) * hit.oy; vy = Math.sign(hit.dy) * Math.abs(vy); }
+        // it dies on this hit → the rest of the flight passes through where it was
+        if (destructible && brick.hp <= 1) broken.add(idx);
+        break scan;                                                  // one brick per step
+      }
+    }
+  }
+  return null;
+};
+
+// `trap` profiles only: how far off its own center the AI wants to take the
+// catch, as a fraction of a half-width, capped at ±`trap`.
+//
+// The portal re-emits the ball from the *player's* paddle at the same relative
+// offset, with `vx += offset * PORTAL_ENGLISH`. So the catch position is the
+// only thing that steers the return, and the player is standing right where it
+// comes out — the way to make them run is to give the return as much sideways
+// speed as possible. English that ADDS to the ball's own vx does that (renorm
+// then trades it out of vy), turning every return into a cross-court shot
+// instead of a lob straight back over their head. `vxIn` is the ball's vx at
+// the catch, from the forward sim.
+const aiTrapOffset = (vxIn) => {
+  // near-vertical arrival: there is no sideways motion to amplify, so pick the
+  // direction that sends it at the wall the player is furthest from instead
+  const dir = Math.abs(vxIn) > 40
+    ? (vxIn > 0 ? 1 : -1)
+    : (paddles.bottom.x < FIELD_W / 2 ? 1 : -1);
+  return dir * ai.profile.trap;
 };
 
 const aiThink = () => {
@@ -1237,16 +1350,42 @@ const aiThink = () => {
     const dy = b.y - TOP_PLANE;
     if (dy >= 0 && dy < bestDy) { bestDy = dy; threat = b; }
   }
+  // predicting profiles re-pick the threat by simulation: with several balls up
+  // the one that *arrives* first is the one to be standing under, and it is not
+  // necessarily the nearest one
+  let pred = null;
+  if (ai.profile.predict) {
+    for (const b of balls) {
+      if (b.stuck || b.vy >= 0 || b.y < TOP_PLANE) continue;
+      const hit = aiPredictTop(b);
+      if (hit && hit.steps < (pred?.steps ?? Infinity)) { pred = hit; threat = b; }
+    }
+  }
   if (threat) {
-    const raw = threat.x + threat.vx * (bestDy / -threat.vy);
-    // fold the straight-line x back into the field: side-wall reflection
-    const span = FIELD_W - 2 * BALL_R;
-    let xr = (raw - BALL_R) % (2 * span);
-    if (xr < 0) xr += 2 * span;
-    if (xr > span) xr = 2 * span - xr;
+    let aimX = pred?.x ?? null;
+    if (aimX === null) {
+      const raw = threat.x + threat.vx * ((threat.y - TOP_PLANE) / -threat.vy);
+      // fold the straight-line x back into the field: side-wall reflection
+      const span = FIELD_W - 2 * BALL_R;
+      let xr = (raw - BALL_R) % (2 * span);
+      if (xr < 0) xr += 2 * span;
+      if (xr > span) xr = 2 * span - xr;
+      aimX = xr + BALL_R;
+    }
     // aim error grows with ball speed (which the ramp floor drives up) and ramp
     const err = ai.profile.err * (threat.speed / BALL_SPEED) * (0.5 + curRamp() / 2);
-    ai.targetX = clamp(xr + BALL_R + rand(-err, err),
+    // Stand off-center by the english it wants on the return, so the ball meets
+    // the paddle at that offset instead of at its middle. The sim's arrival time
+    // bounds how far the paddle can still travel, so the trapped spot is clamped
+    // into what it can actually reach: when the trap is affordable it commits to
+    // it, and when it isn't it drifts back toward a plain catch rather than
+    // missing. |offset| <= trap keeps the ball on the paddle either way.
+    if (ai.profile.trap && pred) {
+      const reach = ai.profile.speed * (pred.steps * AI_SIM_DT);
+      const want = aiTrapOffset(pred.vx) * (paddles.top.w / 2);
+      aimX = clamp(aimX - want, paddles.top.x - reach, paddles.top.x + reach);
+    }
+    ai.targetX = clamp(aimX + rand(-err, err),
       paddles.top.w / 2, FIELD_W - paddles.top.w / 2);
     return;
   }
@@ -1712,15 +1851,15 @@ const onNetMessage = (msg) => {
       if (msg.hp > 0) {
         b.hp = msg.hp;
         audio.sfx('silver');
-        fx.sparks(b.x + BRICK_W / 2, b.y + BRICK_H / 2, BRICK_TYPES[b.type]?.color ?? '#fff');
+        fx.sparks(b.x + bW / 2, b.y + bH / 2, BRICK_TYPES[b.type]?.color ?? '#fff');
       } else if (b.alive) {
         b.alive = false;
         const info = BRICK_TYPES[b.type];
         audio.sfx('brick', { combo });
-        fx.brickBurst(b.x + BRICK_W / 2, b.y + BRICK_H / 2, info?.color ?? '#fff');
+        fx.brickBurst(b.x + bW / 2, b.y + bH / 2, info?.color ?? '#fff');
         if (info?.points) {
           const pts = Math.round(info.points * (1 + combo * 0.1)); // mirror host award
-          fx.floatText(b.x + BRICK_W / 2, b.y + BRICK_H / 2, `+${pts}`, info.color);
+          fx.floatText(b.x + bW / 2, b.y + bH / 2, `+${pts}`, info.color);
         }
       }
       break;
@@ -1805,12 +1944,15 @@ const drawBricks = () => {
   for (const b of bricks) {
     if (!b?.alive) continue;
     const info = BRICK_TYPES[b.type];
-    const x = b.x + 2, y = b.y + 2, w = BRICK_W - 4, h = BRICK_H - 4;
-    roundRectPath(ctx, x, y, w, h, 6);
+    // gap and corner scale with the brick: a fixed 2px inset would swallow a
+    // mini brick (30×17) and look lost on a giant one (130×68)
+    const pad = clamp(bH * 0.06, 1, 3);
+    const x = b.x + pad, y = b.y + pad, w = bW - pad * 2, h = bH - pad * 2;
+    roundRectPath(ctx, x, y, w, h, Math.min(6, bH * 0.18));
     ctx.fillStyle = info.color;
     ctx.fill();
     // top highlight
-    roundRectPath(ctx, x + 2, y + 2, w - 4, h * 0.38, 4);
+    roundRectPath(ctx, x + pad, y + pad, w - pad * 2, h * 0.38, Math.min(4, bH * 0.12));
     ctx.fillStyle = 'rgba(255,255,255,0.18)';
     ctx.fill();
     if (b.type === 'S' && b.hp === 1) {

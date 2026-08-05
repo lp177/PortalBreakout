@@ -561,14 +561,25 @@ const wireVersus = () => {
 // the name alone. Draws the grid in the real brick colors over the playfield's
 // dark background, with the two portal paddles hinted top and bottom. The
 // aspect is the grid's (13×14 cells) plus a margin row for each paddle.
-const THUMB_ROWS = GRID_ROWS + 4;         // 2 spacer rows top + bottom for the paddles
+// A level may use a coarser (giant) or finer (mini) grid than the default, so
+// read its real dimensions from the data rather than assuming 13x14. The brick
+// band is the same height at every scale, so the thumbnail keeps its aspect.
+const thumbDims = (level) => {
+  const rows = level.rows?.length || GRID_ROWS;
+  const cols = level.rows?.[0]?.length || GRID_COLS;
+  return { rows, cols, aspect: (GRID_ROWS + 4) / GRID_ROWS };
+};
 
 const renderLevelThumb = (canvas, levelIdx) => {
   const level = LEVELS[levelIdx];
   if (!canvas || !level) return;
+  const { rows: lRows, cols: lCols, aspect } = thumbDims(level);
   const cssW = canvas.clientWidth || 240;
-  const cell = cssW / GRID_COLS;
-  const cssH = Math.round(cell * THUMB_ROWS);
+  const cell = cssW / lCols;
+  // keep every preview the same shape whatever the grid: the band is constant
+  const cssH = Math.round((cssW / GRID_COLS) * (GRID_ROWS + 4));
+  const rowH = (cell * lCols * (GRID_ROWS / GRID_COLS)) / lRows;
+  void aspect;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
@@ -584,21 +595,24 @@ const renderLevelThumb = (canvas, levelIdx) => {
   // faint grid, matching the in-game field
   c.strokeStyle = 'rgba(120,170,220,0.07)';
   c.lineWidth = 1;
-  for (let i = 1; i < GRID_COLS; i++) {
-    c.beginPath(); c.moveTo(Math.round(i * cell) + 0.5, 0); c.lineTo(Math.round(i * cell) + 0.5, cssH); c.stroke();
+  const lines = Math.min(lCols, 26);
+  for (let i = 1; i < lines; i++) {
+    const gx = Math.round((i * cssW) / lines) + 0.5;
+    c.beginPath(); c.moveTo(gx, 0); c.lineTo(gx, cssH); c.stroke();
   }
 
-  const pad = Math.max(0.7, cell * 0.07);
-  const r = Math.max(1.5, cell * 0.16);
+  const pad = Math.max(0.35, cell * 0.07);
+  const r = Math.max(0.8, cell * 0.16);
+  const topPad = (cssH - rowH * lRows) / 2;   // centre the band, paddles either side
   level.rows.forEach((row, ri) => {
-    for (let ci = 0; ci < GRID_COLS; ci++) {
+    for (let ci = 0; ci < lCols; ci++) {
       const ch = row[ci];
       const info = ch && ch !== '.' ? BRICK_TYPES[ch] : null;
       if (!info) continue;
       const x = ci * cell + pad;
-      const y = (ri + 2) * cell + pad;      // +2: the top paddle's spacer rows
+      const y = topPad + ri * rowH + pad;
       const w = cell - pad * 2;
-      const h = cell - pad * 2;
+      const h = rowH - pad * 2;
       c.beginPath();
       if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h);
       c.fillStyle = info.color;
@@ -614,7 +628,7 @@ const renderLevelThumb = (canvas, levelIdx) => {
   });
 
   // portal paddles: orange (bottom / host) and blue (top / joiner)
-  const pw = cell * 2.2, ph = Math.max(2.5, cell * 0.34);
+  const pw = cssW * 0.17, ph = Math.max(2.5, cssH * 0.011);
   const drawPad = (cy, color) => {
     c.beginPath();
     if (c.roundRect) c.roundRect((cssW - pw) / 2, cy - ph / 2, pw, ph, ph / 2);
@@ -622,8 +636,9 @@ const renderLevelThumb = (canvas, levelIdx) => {
     c.fillStyle = color;
     c.fill();
   };
-  drawPad(cell * 0.9, '#42a5f5');
-  drawPad(cssH - cell * 0.9, '#ff9800');
+  const padY = Math.max(4, (cssH - rowH * lRows) / 4);
+  drawPad(padY, '#42a5f5');
+  drawPad(cssH - padY, '#ff9800');
 
   c.strokeStyle = 'rgba(120,170,220,0.22)';
   c.strokeRect(0.5, 0.5, cssW - 1, cssH - 1);
