@@ -190,6 +190,10 @@ const curRamp = () => {
   return Math.min(1 + VS_RAMP_RATE * matchTime, VS_RAMP_MAX);
 };
 
+// Local 2-player versus: two people on one machine (typically two gamepads),
+// so the top portal is driven by the second player instead of the AI.
+let localVersus = false;
+
 const makeAi = (difficulty) => ({
   profile: AI_PROFILES[difficulty] ?? AI_PROFILES.normal,
   reactT: 0, targetX: FIELD_W / 2, serveT: 0,
@@ -261,8 +265,8 @@ const startLoop = () => {
 };
 
 // ---- lifecycle ----
-const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; gameMode = 'coop'; ai = null; startLoop(); setupLevel(idx); };
-const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; guestPadVel = 0; lastGuestInputT = 0; vsLives = { bottom: LIVES_START, top: LIVES_START }; startLoop(); setupLevel(idx); };
+const startSolo = (idx, opts = {}) => { void opts; mode = 'solo'; gameMode = 'coop'; ai = null; localVersus = false; startLoop(); setupLevel(idx); };
+const startHost = (idx) => { mode = 'host'; gameMode = 'coop'; ai = null; localVersus = false; guestInput = { x: FIELD_W / 2, fire: false, launch: false }; guestPadVel = 0; lastGuestInputT = 0; vsLives = { bottom: LIVES_START, top: LIVES_START }; startLoop(); setupLevel(idx); };
 
 // Co-op multiplayer = shared field, per-player hearts (vsLives), heal on clear,
 // game over only when BOTH sides hit 0. Solo campaign (mode 'solo') keeps the
@@ -352,7 +356,19 @@ const loadArena = (idx, serveSide) => {
 const startVersusAI = (difficulty, levelIdx_) => {
   mode = 'solo';
   gameMode = 'versus';
+  localVersus = false;
   ai = makeAi(difficulty);
+  startLoop();
+  setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
+};
+
+// Same match rules as vs-Computer, but the top portal is a second human on this
+// machine. No net session and no AI — both paddles come from the local input.
+const startVersusLocal = (levelIdx_) => {
+  mode = 'solo';
+  gameMode = 'versus';
+  localVersus = true;
+  ai = null;
   startLoop();
   setupMatch(Number.isInteger(levelIdx_) ? levelIdx_ : randomLevel());
 };
@@ -360,7 +376,7 @@ const startVersusAI = (difficulty, levelIdx_) => {
 const startVersusHost = (levelIdx_) => {
   mode = 'host';
   gameMode = 'versus';
-  ai = null;
+  ai = null; localVersus = false;
   guestInput = { x: FIELD_W / 2, fire: false, launch: false };
   guestPadVel = 0; lastGuestInputT = 0;
   startLoop();
@@ -376,7 +392,7 @@ const teardown = () => {
   balls = []; powerups = []; lasers = []; delayed = [];
   snapPrev = null; snapCur = null; remotePaused = false; renderPos = [];
   timeScale = 1; slowmoT = 0; clearPending = false;
-  gameMode = 'coop'; ai = null; vsWinner = null;
+  gameMode = 'coop'; ai = null; vsWinner = null; localVersus = false;
   fx.clear();
   input.reset();
 };
@@ -567,8 +583,14 @@ const hostFrame = (dt, inp) => {
       if (phase !== 'serve' && phase !== 'playing') break;
     }
     // versus: each side launches only its own stuck balls (AI serves via aiStep)
-    if (inp.launch && (phase === 'serve' || phase === 'playing')) {
-      launchStuck(gameMode === 'versus' ? 'bottom' : undefined);
+    if (phase === 'serve' || phase === 'playing') {
+      if (localVersus) {
+        // two humans: each serves their own ball with their own key/button
+        if (inp.bottom.launch) launchStuck('bottom');
+        if (inp.top.launch) launchStuck('top');
+      } else if (inp.launch) {
+        launchStuck(gameMode === 'versus' ? 'bottom' : undefined);
+      }
     }
     if (gameMode === 'versus' && mode === 'host' && guestInput.launch
         && (phase === 'serve' || phase === 'playing')) {
@@ -662,7 +684,11 @@ const movePaddles = (dt, inp) => {
     if (Math.abs(p.w - targetW) < 0.5) p.w = targetW;
   }
 
-  if (gameMode === 'versus' && mode !== 'guest') {
+  if (gameMode === 'versus' && localVersus) {
+    // two humans here: each owns exactly one portal, so the channels must NOT
+    // be merged the way a one-player versus match merges them
+    movePaddle(paddles.bottom, inp.bottom.move, inp.bottom.targetX, dt);
+  } else if (gameMode === 'versus' && mode !== 'guest') {
     // versus: the local player only owns the bottom portal — merge all local
     // input channels into it (same convention as the guest's top paddle)
     movePaddle(paddles.bottom, inp.bottom.move || inp.top.move,
@@ -683,7 +709,10 @@ const movePaddles = (dt, inp) => {
     const maxStep = ai.profile.speed * dt;
     p.x += clamp(ai.targetX - p.x, -maxStep, maxStep);
     p.x = clamp(p.x, p.w / 2, FIELD_W - p.w / 2);
-  } else if (assist && mode === 'solo') {
+  } else if (gameMode === 'versus' && localVersus) {
+    movePaddle(paddles.top, inp.top.move, inp.top.targetX, dt);
+  } else if (assist && mode === 'solo' && !inp.top.pad) {
+    // a second pad in hand means a second player — never mirror over them
     paddles.top.x = clamp(paddles.bottom.x, paddles.top.w / 2, FIELD_W - paddles.top.w / 2);
   } else if (gameMode === 'versus') {
     // versus host with the guest transiently gone: the top portal holds position
@@ -2286,6 +2315,7 @@ export const engine = {
   startHost,
   startGuest,
   startVersusAI,
+  startVersusLocal,   // documented extra: local 2-player versus (v1.6)
   startVersusHost,
   onNetMessage,
   pause,

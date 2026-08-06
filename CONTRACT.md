@@ -8,7 +8,8 @@ Classic Breakout, but paddles are **portals**. Two paddles: one at the bottom, o
 
 - **Steering ("portal english")**: on teleport, the ball exits at the same relative offset from the exit paddle's center as it entered the entry paddle, and `vx += offset * PORTAL_ENGLISH` where `offset` is −1..1 relative to paddle half-width. This is the core skill mechanic.
 - Each teleport multiplies ball speed by `SPEED_UP` (cap `BALL_SPEED_MAX`), and resets the combo.
-- Solo: one player controls both paddles (separate rebindable keys; mouse moves bottom paddle; touch: bottom half of screen drags bottom paddle, top half the top paddle). Optional "assist" setting makes the top paddle mirror the bottom one.
+- Solo: one player controls both paddles (both key clusters, mouse moves bottom paddle; touch: bottom half of screen drags bottom paddle, top half the top paddle). Optional "assist" setting makes the top paddle mirror the bottom one.
+- Local 2P: two people on one machine — two gamepads, or the keyboard split P1/P2 (see "Local 2-player" below).
 - Multiplayer (2P): host = bottom paddle + authoritative physics; guest = top paddle, sends input, renders host state snapshots.
 
 ## Constants (defined in `js/constants.js`, imported everywhere)
@@ -88,11 +89,11 @@ Settings shape (also the rebindable actions list):
 
 ```js
 {
-  binds: {
-    bottomLeft: 'ArrowLeft', bottomRight: 'ArrowRight', bottomFire: 'ArrowUp',
-    topLeft: 'KeyA', topRight: 'KeyD', topFire: 'KeyW',
-    launch: 'Space', pause: 'Escape',
-  },                                        // values are KeyboardEvent.code
+  binds: {                                  // P1 = left cluster, P2 = arrows
+    bottomLeft: 'KeyA', bottomRight: 'KeyD', bottomFire: 'KeyW', launch: 'Space',
+    topLeft: 'ArrowLeft', topRight: 'ArrowRight', topFire: 'ArrowUp', launch2: 'Enter',
+    pause: 'Escape',
+  },                                        // KeyboardEvent.code = PHYSICAL keys
   audio: { master: 0.8, music: 0.5, sfx: 0.9, muted: false },
   effects: 'full' | 'reduced',              // default 'full' unless prefers-reduced-motion
   assist: false,                            // top paddle mirrors bottom in solo
@@ -467,3 +468,45 @@ Measured on a headless replica of `moveBalls`/`teleport`/`collideBricks`/`hitBri
 | `[144] Iris Gate` | 5.4/h | 10.0/h | |
 
 The failure mode they shared: **a destructible brick with gold directly above *and* below can only be struck from the side**, and `MIN_VY_RATIO` forbids a purely horizontal ball, so it has to be picked off inside a 34 px slot one slow pass at a time. Six of the seven were rows of exactly that behind a sealed band. The fixes stagger or shorten the gold so far fewer bricks are gold-sandwiched, and give every enclosure more than one mouth. Counter-intuitively, *removing* gold is not automatically an improvement — `[56]`'s outer gold frame was retained inward as ring walls and deleted only where it kept the ball circulating outside the structure with nothing to hit.
+
+
+## Local 2-player: gamepads and a shared keyboard (v1.6)
+
+Two people on one machine, with no net session. Both control schemes feed the
+same per-paddle intent, so the engine does not care which is in use.
+
+**Gamepads** (`input.js`). Polled in `state()` — the Gamepad API is not evented,
+and `navigator.getGamepads()` returns a live snapshot with holes, so it must be
+re-read every frame and never cached. Pads are sorted by `index`: the first
+drives the bottom (orange) portal, the second the top (blue).
+
+- Left stick X with a `PAD_DEADZONE` of 0.22, **rescaled past the deadzone** so
+  the usable range is still a full 0..1; d-pad 14/15 overrides as digital.
+- `move` is analog and `movePaddle` multiplies it by `PADDLE_SPEED`, so a
+  half-pushed stick is genuinely half speed — no extra code needed.
+- Buttons: A/Y serve (edge-latched per pad via `padPrev`), B/X/shoulders fire,
+  Start/Select pause.
+- Any pad activity clears that paddle's pointer `targetX`, otherwise the paddle
+  snaps back to the last mouse position when the stick returns to centre.
+
+**Shared keyboard.** Defaults are now split by player: P1 on the left-hand
+cluster (`KeyA/KeyD/KeyW`, `Space`), P2 on the arrows (`ArrowLeft/Right/Up`,
+`Enter`). Binds are `KeyboardEvent.code`, i.e. **physical positions**, so the
+left cluster is WASD on QWERTY and ZQSD on AZERTY with no configuration.
+`launch2` is a new bind. Saved binds always win over defaults, so an existing
+player's setup is never rewritten.
+
+- **Solo**: one player owns *both* sets — both clusters drive their own paddle
+  and either serve key launches (the global `inp.launch` ORs them).
+- **Local 2-player**: the sets are split, and `inp.bottom.launch` /
+  `inp.top.launch` let each player serve only their own ball.
+- **Online**: unchanged. `guestFrame` and the versus host both merge *all* local
+  channels into their single paddle, so a remote player may use either set.
+
+**`engine.startVersusLocal(levelIdx)`** — versus rules with `mode='solo'`,
+`ai=null`, `localVersus=true`. `movePaddles` routes the bottom from
+`inp.bottom` only (no channel merging, unlike one-player versus) and the top
+from `inp.top`. Reached from `#btn-vs-local` → `'versus-local'`.
+
+Assist (top mirrors bottom) is skipped when a second pad is present
+(`!inp.top.pad`), or it would silently override player 2.

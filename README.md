@@ -17,15 +17,18 @@
 
 ## Controls (defaults — rebind everything in Options)
 
-| Action | Key |
-| --- | --- |
-| Bottom paddle ← / → | Arrow Left / Arrow Right |
-| Top paddle ← / → | A / D |
-| Launch ball | Space |
-| Fire lasers (bottom / top) | Arrow Up / W |
-| Pause | Esc |
+| Action | Player 1 (orange) | Player 2 (blue) |
+| --- | --- | --- |
+| Move ← / → | A / D *(ZQSD on AZERTY)* | Arrow Left / Arrow Right |
+| Launch ball | Space | Enter |
+| Fire lasers | W | Arrow Up |
+| Pause | Esc | Esc |
 
-Mouse moves the bottom paddle. On touch screens, drag on the bottom or top half of the field to move that paddle.
+Binds are **physical** key positions, so the left-hand cluster is WASD on QWERTY and ZQSD on AZERTY with no configuration.
+
+**Solo:** one player drives both portals using both key sets. **Two players, one computer:** split them — P1 left-hand keys, P2 arrows — or plug in **two gamepads** (pad 1 → orange, pad 2 → blue; analog stick or d-pad, **A** to serve, **Start** to pause). Versus → *"2 players, same computer"* starts a local duel.
+
+Mouse moves the orange paddle. On touch screens, drag on the bottom or top half of the field to move that paddle.
 
 ## Development
 

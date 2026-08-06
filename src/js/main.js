@@ -56,6 +56,7 @@ const startVersus = (config) => {
   setMusic('game', { fresh: true });
   // levelIdx undefined → the engine picks a random arena (the "Random" option)
   if (config.type === 'mp') engine.startVersusHost(config.levelIdx);
+  else if (config.type === 'local') engine.startVersusLocal(config.levelIdx);
   else engine.startVersusAI(config.difficulty, config.levelIdx);
 };
 
@@ -339,6 +340,12 @@ const onAction = (name, data = {}) => {
       document.getElementById('dlg-versus')?.close?.();
       startVersus({ type: 'ai', difficulty: data.difficulty ?? 'normal', levelIdx: data.levelIdx });
       break;
+    case 'versus-local':
+      // two humans on this machine: no net session, no AI
+      if (net.role) { lastRole = null; netLost = false; net.close(); }
+      document.getElementById('dlg-versus')?.close?.();
+      startVersus({ type: 'local', levelIdx: data.levelIdx });
+      break;
     case 'versus-mp':
       if (net.role === 'host' && net.connected) {
         // friend already present → open the versus lobby; the host still starts
@@ -483,6 +490,15 @@ const init = () => {
   window.addEventListener('pointerdown', unlock, { once: true });
   window.addEventListener('keydown', unlock, { once: true });
   setMusic('menu');
+
+  // Gamepads: confirm to the players that a pad was seen. Chrome only surfaces
+  // a pad after its first button press, so this doubles as "your input works".
+  window.addEventListener('gamepadconnected', (e) => {
+    const n = [...(navigator.getGamepads?.() ?? [])].filter(Boolean).length;
+    ui.toast(n >= 2 ? 'Controller 2 connected — local 2-player ready' : 'Controller connected');
+    void e;
+  });
+  window.addEventListener('gamepaddisconnected', () => ui.toast('Controller disconnected'));
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game

@@ -8,7 +8,7 @@
 <title>PortalBreakout</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='18' rx='22' ry='9' fill='none' stroke='%2340c4ff' stroke-width='6'/%3E%3Cellipse cx='32' cy='46' rx='22' ry='9' fill='none' stroke='%23ff9800' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
 <noscript><style>#app { display: none; }</style></noscript>
-  <script type="module" crossorigin src="./assets/index-CpyzSdTe.js"></script>
+  <script type="module" crossorigin src="./assets/index-BpdsoC1C.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-DDoQkEAU.css">
 </head>
 <body>
@@ -186,8 +186,9 @@
   <ul class="how-list">
     <li><strong>Paddles are portals.</strong> The ball never bounces off them — it teleports out of the other paddle, keeping its direction. Falling balls re-enter from the top; rising balls re-enter from the bottom.</li>
     <li><strong>Guard both edges.</strong> Miss a paddle and the ball is gone. You steer by where the ball enters your paddle — edge hits curve the exit.</li>
-    <li><strong>Solo:</strong> arrows move the <span class="c-orange">bottom</span> paddle, A/D the <span class="c-blue">top</span> one (rebind in Options). Mouse drives bottom; on touch, each half of the screen drags its own paddle.</li>
-    <li><strong>Space</strong> launches the ball, <strong>Esc</strong> pauses.</li>
+    <li><strong>Solo:</strong> one player drives both portals — the left-hand keys (WASD, or ZQSD on AZERTY) move the <span class="c-orange">orange</span> one, the arrows the <span class="c-blue">blue</span> one, and either serve key launches. Mouse drives orange; on touch, each half of the screen drags its own paddle.</li>
+    <li><strong>2 players, one computer:</strong> share the keyboard — player 1 on the left-hand keys + <strong>Space</strong>, player 2 on the arrows + <strong>Enter</strong> — or plug in <strong>two controllers</strong>, one each. Versus → "2 players, same computer" for a local duel.</li>
+    <li><strong>Space</strong> (or <strong>Enter</strong>) launches the ball, <strong>Esc</strong> pauses. On a controller: <strong>A</strong> serves, <strong>Start</strong> pauses, the stick or d-pad moves.</li>
     <li><strong>No mouse needed.</strong> In menus and dialogs the arrow keys move between buttons and <strong>Enter</strong> picks one.</li>
     <li><strong>Break every brick</strong> to clear a level. Silver takes two hits, gold is indestructible, orange cores explode.</li>
     <li><strong>Catch the drops</strong> with either paddle: multiball, lasers, fireball, sticky, expand, slow, extra life.</li>
@@ -246,6 +247,12 @@
       <figcaption id="vs-preview-name" class="lobby-preview-name"></figcaption>
     </figure>
     <button id="btn-vs-ai" class="btn btn-primary" type="button">Start match</button>
+  </section>
+
+  <section class="mp-section" aria-labelledby="vs-local-title">
+    <h3 id="vs-local-title">2 players, same computer</h3>
+    <p class="hint" id="vs-local-hint">Plug in two controllers — player 1 takes the <span class="c-orange">orange</span> portal, player 2 the <span class="c-blue">blue</span> one. Uses the arena chosen above.</p>
+    <button id="btn-vs-local" class="btn btn-tonal" type="button">Start local match</button>
   </section>
 
   <section class="mp-section" aria-labelledby="vs-friend-title">

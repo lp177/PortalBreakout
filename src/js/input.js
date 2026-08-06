@@ -15,6 +15,9 @@ let mapper = null;                 // fn(clientX, clientY) → {x, y} in field u
 const held = new Set();            // KeyboardEvent.code values currently down
 let pauseEdge = false;             // reported true exactly once per physical press
 let launchEdge = false;            // transient tap-to-serve edge (touch/pen)
+// per-player serve edges: P1 uses binds.launch, P2 uses binds.launch2, so two
+// people on one keyboard can each serve their own ball in a local versus match
+let launchEdgeSide = { bottom: false, top: false };
 let bottomTargetX = null;          // pointer-driven absolute x, field units
 let topTargetX = null;
 let ownerBottom = null;            // pointerId owning each paddle (touch/pen only)
@@ -22,6 +25,56 @@ let ownerTop = null;
 
 let captureHandler = null;         // active one-shot rebind listener, or null
 let detachFns = [];                // listener removers from the last attach()
+
+// ---- gamepads (local 2-player) ----------------------------------------------
+// The first connected pad drives the bottom paddle, the second the top, so two
+// people can play on one machine. `move` is analog: movePaddle multiplies it by
+// PADDLE_SPEED, so a half-pushed stick is genuinely half speed.
+const PAD_DEADZONE = 0.22;
+const PAD_BTN = {
+  launch: [0, 3],          // A / Y
+  fire: [1, 2, 5, 7],      // B, X, right shoulder, right trigger
+  pause: [9, 8],           // Start / Select
+  left: 14, right: 15,     // d-pad
+};
+// per-pad previous button state, keyed by gamepad index, for edge detection
+const padPrev = new Map();
+let padLaunchEdge = { bottom: false, top: false };
+let padActive = { bottom: false, top: false };
+
+const livePads = () => {
+  if (typeof navigator === 'undefined' || !navigator.getGamepads) return [];
+  // getGamepads() returns a live snapshot with holes — never cache it
+  return [...navigator.getGamepads()].filter((p) => p && p.connected)
+    .sort((a, b) => a.index - b.index);
+};
+
+const pressed = (pad, idx) => Boolean(pad.buttons[idx]?.pressed);
+const anyPressed = (pad, list) => list.some((i) => pressed(pad, i));
+
+// Read one pad into per-paddle intent, latching launch/pause as edges.
+const readPad = (pad, side) => {
+  const axis = pad.axes?.[0] ?? 0;
+  const stick = Math.abs(axis) > PAD_DEADZONE
+    // rescale past the deadzone so the usable range is still a full 0..1
+    ? Math.sign(axis) * ((Math.abs(axis) - PAD_DEADZONE) / (1 - PAD_DEADZONE))
+    : 0;
+  const dpad = (pressed(pad, PAD_BTN.right) ? 1 : 0) - (pressed(pad, PAD_BTN.left) ? 1 : 0);
+  const move = dpad || Math.max(-1, Math.min(1, stick));
+  const fire = anyPressed(pad, PAD_BTN.fire);
+  const launchNow = anyPressed(pad, PAD_BTN.launch);
+  const pauseNow = anyPressed(pad, PAD_BTN.pause);
+
+  const prev = padPrev.get(pad.index) ?? { launch: false, pause: false };
+  if (launchNow && !prev.launch) padLaunchEdge[side] = true;
+  if (pauseNow && !prev.pause) pauseEdge = true;
+  padPrev.set(pad.index, { launch: launchNow, pause: pauseNow });
+
+  // any activity means this player is on the pad — drop a stale pointer target
+  // for their paddle, or the paddle snaps back to the mouse when they let go
+  if (move !== 0 || fire || launchNow) padActive[side] = true;
+  return { move, fire };
+};
 
 const isFormTarget = (t) =>
   t instanceof Element
@@ -53,7 +106,8 @@ const onKeyDown = (e) => {
     if (e.code === binds.pause) pauseEdge = true;
     // A tap of the launch key shorter than one frame would vanish from the
     // held set before state() is polled — latch it as an edge like touch taps.
-    if (e.code === binds.launch) launchEdge = true;
+    if (e.code === binds.launch) { launchEdge = true; launchEdgeSide.bottom = true; }
+    if (e.code === binds.launch2) { launchEdge = true; launchEdgeSide.top = true; }
     // Keyboard beats pointer: a fresh movement press clears that paddle's
     // pointer target until its pointer moves again.
     if (e.code === binds.bottomLeft || e.code === binds.bottomRight) bottomTargetX = null;
@@ -146,23 +200,45 @@ export const input = {
   },
 
   state() {
+    // gamepads are polled, not evented, so they must be read once per frame here
+    padActive = { bottom: false, top: false };
+    const pads = livePads();
+    const padBottom = pads[0] ? readPad(pads[0], 'bottom') : null;
+    const padTop = pads[1] ? readPad(pads[1], 'top') : null;
+    if (padActive.bottom) bottomTargetX = null;
+    if (padActive.top) topTargetX = null;
+
     const pause = pauseEdge;
     pauseEdge = false;                             // edge-triggered: consumed on read
-    const launch = held.has(binds.launch) || launchEdge;
+    const padLaunch = padLaunchEdge;
+    padLaunchEdge = { bottom: false, top: false };
+    const keyLaunch = launchEdgeSide;
+    launchEdgeSide = { bottom: false, top: false };
+    const launch = held.has(binds.launch) || held.has(binds.launch2)
+      || launchEdge || padLaunch.bottom || padLaunch.top;
     launchEdge = false;
+
+    const keyBottom = (held.has(binds.bottomRight) ? 1 : 0) - (held.has(binds.bottomLeft) ? 1 : 0);
+    const keyTop = (held.has(binds.topRight) ? 1 : 0) - (held.has(binds.topLeft) ? 1 : 0);
     return {
       bottom: {
-        move: (held.has(binds.bottomRight) ? 1 : 0) - (held.has(binds.bottomLeft) ? 1 : 0),
+        // a pad in hand wins over the keyboard for that paddle
+        move: padBottom?.move || keyBottom,
         targetX: bottomTargetX,
-        fire: held.has(binds.bottomFire),
+        fire: held.has(binds.bottomFire) || Boolean(padBottom?.fire),
+        launch: padLaunch.bottom || keyLaunch.bottom || held.has(binds.launch),
+        pad: Boolean(padBottom),
       },
       top: {
-        move: (held.has(binds.topRight) ? 1 : 0) - (held.has(binds.topLeft) ? 1 : 0),
+        move: padTop?.move || keyTop,
         targetX: topTargetX,
-        fire: held.has(binds.topFire),
+        fire: held.has(binds.topFire) || Boolean(padTop?.fire),
+        launch: padLaunch.top || keyLaunch.top || held.has(binds.launch2),
+        pad: Boolean(padTop),
       },
       launch,
       pause,
+      pads: pads.length,
     };
   },
 
@@ -191,6 +267,9 @@ export const input = {
     held.clear();
     pauseEdge = false;
     launchEdge = false;
+    padPrev.clear();
+    padLaunchEdge = { bottom: false, top: false };
+    launchEdgeSide = { bottom: false, top: false };
     ownerBottom = null;
     ownerTop = null;
     bottomTargetX = null;

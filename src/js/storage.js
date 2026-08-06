@@ -6,10 +6,17 @@ const prefersReduced = typeof matchMedia === 'function'
   && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export const DEFAULT_SETTINGS = Object.freeze({
+  // Two players share one keyboard: P1 (bottom / orange) on the left-hand
+  // cluster, P2 (top / blue) on the arrows. These are KeyboardEvent.code values,
+  // i.e. PHYSICAL keys — so KeyA/KeyD/KeyW is WASD on QWERTY and ZQSD on AZERTY
+  // with no per-layout configuration. Saved binds always win over these, so an
+  // existing player's setup is never rewritten.
   binds: Object.freeze({
-    bottomLeft: 'ArrowLeft', bottomRight: 'ArrowRight', bottomFire: 'ArrowUp',
-    topLeft: 'KeyA', topRight: 'KeyD', topFire: 'KeyW',
-    launch: 'Space', pause: 'Escape',
+    bottomLeft: 'KeyA', bottomRight: 'KeyD', bottomFire: 'KeyW',
+    launch: 'Space',
+    topLeft: 'ArrowLeft', topRight: 'ArrowRight', topFire: 'ArrowUp',
+    launch2: 'Enter',
+    pause: 'Escape',
   }),
   audio: Object.freeze({ master: 0.8, music: 0.5, sfx: 0.9, muted: false }),
   effects: prefersReduced ? 'reduced' : 'full',

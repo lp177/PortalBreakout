@@ -7,14 +7,17 @@ import { loadSettings, saveSettings, loadProgress, isUnlocked, DEFAULT_SETTINGS 
 import { audio } from './audio.js';
 import { input } from './input.js';
 
+// Labelled by player, because these double as the local 2-player controls:
+// P1 owns the bottom (orange) portal, P2 the top (blue) one.
 const BIND_LABELS = {
-  bottomLeft: 'Bottom paddle ←',
-  bottomRight: 'Bottom paddle →',
-  bottomFire: 'Bottom paddle · fire',
-  topLeft: 'Top paddle ←',
-  topRight: 'Top paddle →',
-  topFire: 'Top paddle · fire',
-  launch: 'Launch ball',
+  bottomLeft: 'P1 · orange portal ←',
+  bottomRight: 'P1 · orange portal →',
+  bottomFire: 'P1 · fire',
+  launch: 'P1 · launch ball',
+  topLeft: 'P2 · blue portal ←',
+  topRight: 'P2 · blue portal →',
+  topFire: 'P2 · fire',
+  launch2: 'P2 · launch ball',
   pause: 'Pause',
 };
 
@@ -548,6 +551,12 @@ const wireVersus = () => {
 
   // main.js decides: start the match (host) or redirect to the multiplayer
   // dialog — close this one first so modals never stack
+  $('btn-vs-local').addEventListener('click', () => {
+    const map = $('vs-map').value;
+    emit('versus-local', { levelIdx: map === 'random' ? undefined : Number(map) });
+    closeDialog($('dlg-versus'));
+  });
+
   $('btn-vs-friend').addEventListener('click', () => {
     closeDialog($('dlg-versus'));
     emit('versus-mp');
@@ -905,7 +914,8 @@ export const ui = {
     // onAction(name, data) names: 'play' {levelIdx}, 'replay' {levelIdx},
     // 'host', 'join' {code}, 'options-changed' {settings}, 'pause', 'resume',
     // 'retry', 'next-level', 'quit-to-menu', 'cancel-mp',
-    // 'versus-ai' {difficulty}, 'versus-mp', 'rematch', 'back-to-lobby',
+    // 'versus-ai' {difficulty}, 'versus-local' {levelIdx}, 'versus-mp',
+    // 'rematch', 'back-to-lobby',
     // 'lobby-start' {mode, levelIdx}, 'lobby-kick', 'lobby-leave',
     // 'lobby-config' {mode, levelIdx}
     emit = (name, data) => onAction(name, data);
