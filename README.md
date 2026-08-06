@@ -30,6 +30,8 @@ Binds are **physical** key positions, so the left-hand cluster is WASD on QWERTY
 
 Mouse moves the orange paddle. On touch screens, drag on the bottom or top half of the field to move that paddle.
 
+**Controllers work everywhere** — d-pad or stick to move through menus, **A** to select, **B** to go back — so a couch session never needs the keyboard.
+
 ## Development
 
 Vanilla ES modules, no framework. Source lives in [`/src`](src/); [Vite](https://vite.dev) bundles it into [`/docs`](docs/), the committed production build that GitHub Pages serves. Never edit `/docs` by hand.

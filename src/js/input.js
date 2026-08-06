@@ -11,6 +11,7 @@ let boundCodes = new Set(Object.values(binds));
 let assist = DEFAULT_SETTINGS.assist;
 
 let mapper = null;                 // fn(clientX, clientY) → {x, y} in field units
+let canvasEl = null;               // set by attach(); used to tell if the field is on screen
 
 const held = new Set();            // KeyboardEvent.code values currently down
 let pauseEdge = false;             // reported true exactly once per physical press
@@ -83,6 +84,13 @@ const isFormTarget = (t) =>
 
 const dialogOpen = () => Boolean(document.querySelector('dialog[open]'));
 
+// The playfield only owns the keyboard while it is on screen. Without this the
+// game swallowed its own bound keys on the menus: `launch` is Space and
+// `launch2` is Enter, so preventDefault() here cancelled the browser's native
+// activation of a focused menu button — the ripple fired (a separate listener)
+// but the button never triggered, and only a mouse click worked.
+const gameVisible = () => Boolean(canvasEl && canvasEl.offsetParent !== null);
+
 const onKeyDown = (e) => {
   if (captureHandler) return;                      // rebind capture owns the keyboard
   if (isFormTarget(e.target)) return;
@@ -100,6 +108,8 @@ const onKeyDown = (e) => {
     }
     return;
   }
+  // menus/level select: let the browser activate the focused control natively
+  if (!gameVisible()) return;
   if (!boundCodes.has(e.code)) return;
   e.preventDefault();                              // stop Space/arrow scrolling etc.
   if (!e.repeat) {
@@ -173,6 +183,7 @@ const onContextMenu = (e) => e.preventDefault();   // long-press menu would brea
 
 export const input = {
   attach(canvas) {
+    canvasEl = canvas;
     detachFns.forEach((fn) => fn());               // re-attach replaces old listeners
     detachFns = [];
     const add = (target, type, fn, opts) => {

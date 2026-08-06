@@ -510,3 +510,26 @@ from `inp.top`. Reached from `#btn-vs-local` → `'versus-local'`.
 
 Assist (top mirrors bottom) is skipped when a second pad is present
 (`!inp.top.pad`), or it would silently override player 2.
+
+
+## Menu input ownership (v1.6.1)
+
+**The playfield only owns the keyboard while it is on screen.** `input.js`
+`onKeyDown` bails unless `canvasEl.offsetParent !== null`. Without that gate the
+game swallowed its own binds on the menus: `launch` is `Space` and `launch2` is
+`Enter`, so `preventDefault()` cancelled the browser's *native* activation of a
+focused menu button — the ripple fired (a separate listener in `ui.js`) but the
+button never triggered, and only a mouse click worked. Dialogs were unaffected
+because that branch already returned early.
+
+`ui.showScreen('game')` blurs the active element, or the serve key would activate
+whichever button was last clicked instead of reaching the game.
+
+**Gamepads navigate menus too** (`wireGamepadNav`), or a couch session cannot
+start a game without a keyboard. It polls on rAF and is active whenever the field
+is hidden *or* a dialog is open — the engine owns the pads only when the field is
+visible with no dialog. D-pad and left stick move focus through the same
+geometric `pickInDirection` the arrow keys use (shared via `moveFocus`), with
+hold-to-repeat (380 ms then 140 ms) so one flick moves one item. **A** activates
+the focused control (with a ripple, matching the keyboard), **B** closes any
+dialog not marked `closedby="none"`. Suppressed while a rebind capture is armed.

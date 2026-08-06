@@ -207,6 +207,86 @@ const pickInDirection = (items, from, key) => {
   return best;
 };
 
+// ---------- gamepad menu navigation (v1.6.1) ----------
+// A pad has to drive the menus too, or a couch session cannot even start a game
+// without reaching for the keyboard. Reuses the same geometric focus movement as
+// the arrow keys. The engine owns the pads while the field is on screen with no
+// dialog over it; everywhere else, this does.
+const GP_NAV = { first: 380, next: 140, thresh: 0.5 };
+
+const wireGamepadNav = () => {
+  if (typeof navigator === 'undefined' || !navigator.getGamepads) return;
+  let heldDir = null, nextAt = 0, prevA = false, prevB = false;
+
+  const activate = (el) => {
+    if (!el) return;
+    spawnRipple(el);              // same feedback a keyboard press gives
+    el.click();
+  };
+
+  const tick = (now) => {
+    requestAnimationFrame(tick);
+    const canvas = $('game-canvas');
+    const inGame = canvas && canvas.offsetParent !== null;
+    const dlg = [...document.querySelectorAll('dialog')].find((d) => d.open);
+    if ((inGame && !dlg) || listening) { heldDir = null; prevA = prevB = false; return; }
+
+    const pads = [...(navigator.getGamepads?.() ?? [])].filter(Boolean);
+    if (!pads.length) return;
+    // either player may drive the menus, so merge every pad
+    let dx = 0, dy = 0, aDown = false, bDown = false;
+    for (const p of pads) {
+      const ax = p.axes?.[0] ?? 0, ay = p.axes?.[1] ?? 0;
+      if (Math.abs(ax) > GP_NAV.thresh) dx += Math.sign(ax);
+      if (Math.abs(ay) > GP_NAV.thresh) dy += Math.sign(ay);
+      if (p.buttons?.[14]?.pressed) dx -= 1;
+      if (p.buttons?.[15]?.pressed) dx += 1;
+      if (p.buttons?.[12]?.pressed) dy -= 1;
+      if (p.buttons?.[13]?.pressed) dy += 1;
+      if (p.buttons?.[0]?.pressed) aDown = true;
+      if (p.buttons?.[1]?.pressed) bDown = true;
+    }
+
+    const root = navRoot();
+    if (!root) return;
+    const items = navItems(root);
+
+    // direction, with a hold-to-repeat so one flick moves one item
+    const key = Math.abs(dy) >= Math.abs(dx)
+      ? (dy > 0 ? 'ArrowDown' : dy < 0 ? 'ArrowUp' : null)
+      : (dx > 0 ? 'ArrowRight' : 'ArrowLeft');
+    if (!key) {
+      heldDir = null;
+    } else if (items.length) {
+      if (key !== heldDir) { heldDir = key; nextAt = now + GP_NAV.first; moveFocus(root, items, key); }
+      else if (now >= nextAt) { nextAt = now + GP_NAV.next; moveFocus(root, items, key); }
+    }
+
+    if (aDown && !prevA) {
+      const el = document.activeElement;
+      activate(root.contains(el) && el !== root ? el : items[0]);
+    }
+    // B backs out of anything the player is allowed to dismiss
+    if (bDown && !prevB && dlg && dlg.getAttribute('closedby') !== 'none') closeDialog(dlg);
+    prevA = aDown; prevB = bDown;
+  };
+  requestAnimationFrame(tick);
+};
+
+// shared by keyboard and gamepad navigation
+const moveFocus = (root, items, key) => {
+  const active = document.activeElement;
+  if (!active || !root.contains(active) || active === document.body) {
+    items[0]?.focus();
+    return;
+  }
+  const next = pickInDirection(items, active, key);
+  if (next) {
+    next.focus();
+    next.scrollIntoView?.({ block: 'nearest' });
+  }
+};
+
 const wireKeyboardNav = () => {
   document.addEventListener('keydown', (e) => {
     const key = e.key;
@@ -925,6 +1005,7 @@ export const ui = {
     wireRippleAndClickSfx();
     wireInvokerFallback();
     wireKeyboardNav();
+    wireGamepadNav();
     wireMenu();
     wireOptionsForm();
     wireMultiplayer();
@@ -938,6 +1019,9 @@ export const ui = {
     for (const scr of document.querySelectorAll('.screen')) {
       scr.classList.toggle('active', scr.id === `screen-${name}`);
     }
+    // Entering the game: drop focus off whatever button was clicked, or the
+    // launch/serve key would activate that button instead of reaching the game.
+    if (name === 'game') document.activeElement?.blur?.();
     if (name === 'levels') this.refreshLevelGrid();
   },
 
