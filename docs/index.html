@@ -7,14 +7,24 @@
 <meta name="description" content="PortalBreakout — a Breakout arcade game where your paddles are portals. Play solo with both paddles or invite a friend.">
 <title>PortalBreakout</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='18' rx='22' ry='9' fill='none' stroke='%2340c4ff' stroke-width='6'/%3E%3Cellipse cx='32' cy='46' rx='22' ry='9' fill='none' stroke='%23ff9800' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
 <noscript><style>#app { display: none; }</style></noscript>
-  <script type="module" crossorigin src="./assets/index-DnnZxonN.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-DDoQkEAU.css">
+  <script type="module" crossorigin src="./assets/index-BUpdrqyb.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-0lxNWakZ.css">
 </head>
 <body>
 <noscript><p class="noscript">PortalBreakout needs JavaScript to run.</p></noscript>
 
 <div id="app">
+
+  <!-- new build downloaded and waiting; the player chooses when to swap -->
+  <div id="update-banner" class="update-banner" role="status" hidden>
+    <span id="update-text">A new version is ready.</span>
+    <button id="btn-update" class="btn btn-primary" type="button">Reload</button>
+    <button id="btn-update-later" class="btn btn-text" type="button">Later</button>
+  </div>
+
 
   <!-- ============ MAIN MENU ============ -->
   <main id="screen-menu" class="screen active" aria-label="Main menu">

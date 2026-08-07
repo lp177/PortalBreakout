@@ -207,6 +207,15 @@ const pickInDirection = (items, from, key) => {
   return best;
 };
 
+// ---------- update banner (v1.7) ----------
+const wireUpdateBanner = () => {
+  $('btn-update')?.addEventListener('click', () => {
+    $('update-text').textContent = 'Updating…';
+    emit('apply-update');
+  });
+  $('btn-update-later')?.addEventListener('click', () => api.hideUpdateBanner());
+};
+
 // ---------- gamepad menu navigation (v1.6.1) ----------
 // A pad has to drive the menus too, or a couch session cannot even start a game
 // without reaching for the keyboard. Reuses the same geometric focus movement as
@@ -994,6 +1003,7 @@ export const ui = {
     // onAction(name, data) names: 'play' {levelIdx}, 'replay' {levelIdx},
     // 'host', 'join' {code}, 'options-changed' {settings}, 'pause', 'resume',
     // 'retry', 'next-level', 'quit-to-menu', 'cancel-mp',
+    // 'apply-update',
     // 'versus-ai' {difficulty}, 'versus-local' {levelIdx}, 'versus-mp',
     // 'rematch', 'back-to-lobby',
     // 'lobby-start' {mode, levelIdx}, 'lobby-kick', 'lobby-leave',
@@ -1006,6 +1016,7 @@ export const ui = {
     wireInvokerFallback();
     wireKeyboardNav();
     wireGamepadNav();
+    wireUpdateBanner();
     wireMenu();
     wireOptionsForm();
     wireMultiplayer();
@@ -1219,6 +1230,19 @@ export const ui = {
 
   hideLobby() {
     closeDialog($('dlg-lobby'));
+  },
+
+  // A new build is downloaded and waiting. Non-modal by design: it must not
+  // steal focus or block play, so the player can finish the level first.
+  showUpdateBanner() {
+    const el = $('update-banner');
+    if (!el || !el.hidden) return;
+    el.hidden = false;
+  },
+
+  hideUpdateBanner() {
+    const el = $('update-banner');
+    if (el) el.hidden = true;
   },
 
   toast(text) {

@@ -1,0 +1,16 @@
+{
+  "name": "PortalBreakout",
+  "short_name": "PortalBreakout",
+  "description": "Breakout where your paddles are portals — 160 levels, local and online multiplayer.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1117",
+  "theme_color": "#121212",
+  "categories": ["games"],
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

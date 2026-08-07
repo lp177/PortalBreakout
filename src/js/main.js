@@ -7,6 +7,7 @@ import { audio } from './audio.js';
 import { fx } from './particles.js';
 import { LEVELS } from './levels.js';
 import { loadSettings, loadProgress, recordLevelResult } from './storage.js';
+import { pwa } from './pwa.js';
 
 let settings = null;
 let currentLevelIdx = 0;
@@ -340,6 +341,9 @@ const onAction = (name, data = {}) => {
       document.getElementById('dlg-versus')?.close?.();
       startVersus({ type: 'ai', difficulty: data.difficulty ?? 'normal', levelIdx: data.levelIdx });
       break;
+    case 'apply-update':
+      pwa.applyUpdate();      // waiting worker takes over; controllerchange reloads
+      break;
     case 'versus-local':
       // two humans on this machine: no net session, no AI
       if (net.role) { lastRole = null; netLost = false; net.close(); }
@@ -504,7 +508,17 @@ const init = () => {
     if (document.hidden) engine.pause('auto'); // no-op unless mid-game
   });
 
-  window.__pb = { engine, ui, net, audio, version: '1.3.1' };
+  // Offline + update control (see CONTRACT.md "Offline and updates"). The banner
+  // is deliberately non-modal: a new build must never interrupt a rally.
+  pwa.init({
+    onUpdateReady: () => ui.showUpdateBanner(),
+    onOfflineChange: (offline) => {
+      if (offline) ui.toast('Offline — the game keeps working; multiplayer needs a connection.');
+      else ui.toast('Back online.');
+    },
+  });
+
+  window.__pb = { engine, ui, net, audio, pwa, version: '1.7.0' };
 };
 
 if (document.readyState === 'loading') {

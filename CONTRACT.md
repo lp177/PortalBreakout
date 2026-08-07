@@ -533,3 +533,55 @@ geometric `pickInDirection` the arrow keys use (shared via `moveFocus`), with
 hold-to-repeat (380 ms then 140 ms) so one flick moves one item. **A** activates
 the focused control (with a ripple, matching the keyboard), **B** closes any
 dialog not marked `closedby="none"`. Suppressed while a rebind capture is armed.
+
+
+## Offline and updates (v1.7)
+
+Players were sometimes served a stale build on refresh: GitHub Pages sets the
+cache headers for `index.html` and we do not control them, so a browser could
+keep an old HTML that references old hashed assets. A service worker fixes that
+properly *and* buys offline play.
+
+**Generated, never hand-written.** `src/sw-template.js` holds the logic;
+`scripts/build-sw.mjs` runs after `vite build` (chained in `npm run build`),
+scans `docs/`, and writes `docs/sw.js` with the precache list and a version
+stamped in. The version is a **sha256 of the shipped bytes, not a timestamp**, so
+rebuilding unchanged source yields an identical worker and players are never
+nagged to "update" to a byte-identical build. The script asserts each placeholder
+appears exactly once and `new Function()`-parses the result before writing —
+a worker that fails to evaluate makes `register()` throw and silently costs all
+offline support, so that must break the build instead.
+
+**Caching strategy** (per request type, same-origin only):
+
+| request | strategy | why |
+| --- | --- | --- |
+| navigation (`index.html`) | network-first, cache fallback | a refresh always gets the newest HTML when online — *this is the stale-version fix* |
+| `/assets/*` | cache-first | Vite content-hashes them, so a changed file is a new URL |
+| other same-origin | stale-while-revalidate | instant, refreshes behind the player |
+| cross-origin | not intercepted | PeerJS broker and the TURN `/ice` endpoint must always hit the network |
+
+Source maps and `sw.js` itself are excluded from the precache — caching the
+worker would let a stale one resurrect itself.
+
+**Update flow.** The worker deliberately does **not** call `skipWaiting()` on
+install: a new build must never swap assets mid-rally. Instead `js/pwa.js`
+registers with `updateViaCache: 'none'`, watches `updatefound`, and when a new
+worker reaches `installed` *while one is already controlling the page*, calls
+back so `ui.showUpdateBanner()` offers a non-modal "Reload / Later". Accepting
+posts `SKIP_WAITING`; `controllerchange` then reloads **once**.
+
+Two traps, both hit during development:
+
+- `clients.claim()` fires `controllerchange` on the **first** install too. Reloading
+  there bounces every first visit, so the handler is gated on a `swapRequested`
+  flag set only by `applyUpdate()`.
+- A first-ever install has nothing to replace and must not prompt — hence the
+  `navigator.serviceWorker.controller` check in `noteWaiting`.
+
+Update checks run on load, when the tab becomes visible again, on `online`, and
+every 15 minutes.
+
+**Installable.** `src/public/manifest.webmanifest` + `icon.svg` make it a PWA
+(standalone, portrait, dark theme). Paths are relative because Pages serves the
+game from `/PortalBreakout/`.
